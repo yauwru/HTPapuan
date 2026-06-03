@@ -1,0 +1,13 @@
+node_modules/
+.svelte-kit/
+build/
+dist/
+.env
+*.local
+
+# pnpm
+.pnpm-store/
+
+# OS
+.DS_Store
+Thumbs.db

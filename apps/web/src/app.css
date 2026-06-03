@@ -1,0 +1,68 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* Star field background using CSS box-shadow — zero JS, zero network */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(ellipse at 80% 20%, #1a1f3a 0%, #0A0E1A 60%);
+  box-shadow:
+    /* Layer 1: small bright stars */
+    23px 44px 0 0 rgba(255,255,255,0.8),
+    87px 12px 0 0 rgba(255,255,255,0.6),
+    142px 88px 0 0 rgba(255,255,255,0.9),
+    203px 34px 0 0 rgba(255,255,255,0.5),
+    267px 156px 0 0 rgba(255,255,255,0.7),
+    312px 78px 0 0 rgba(255,255,255,0.4),
+    378px 201px 0 0 rgba(255,255,255,0.8),
+    445px 56px 0 0 rgba(255,255,255,0.6),
+    512px 134px 0 0 rgba(255,255,255,0.9),
+    567px 23px 0 0 rgba(255,255,255,0.5),
+    634px 178px 0 0 rgba(255,255,255,0.7),
+    698px 89px 0 0 rgba(255,255,255,0.4),
+    734px 245px 0 0 rgba(255,255,255,0.6),
+    /* Layer 2: dim stars */
+    56px 178px 0 0 rgba(200,220,255,0.3),
+    112px 267px 0 0 rgba(200,220,255,0.2),
+    189px 312px 0 0 rgba(200,220,255,0.35),
+    234px 89px 0 0 rgba(200,220,255,0.25),
+    301px 234px 0 0 rgba(200,220,255,0.4),
+    367px 145px 0 0 rgba(200,220,255,0.2),
+    423px 289px 0 0 rgba(200,220,255,0.3),
+    489px 167px 0 0 rgba(200,220,255,0.15),
+    545px 78px 0 0 rgba(200,220,255,0.35),
+    601px 223px 0 0 rgba(200,220,255,0.25),
+    678px 145px 0 0 rgba(200,220,255,0.4),
+    745px 312px 0 0 rgba(200,220,255,0.2),
+    /* Repeat offset for tiling */
+    800px 44px 0 0 rgba(255,255,255,0.5),
+    867px 188px 0 0 rgba(255,255,255,0.7),
+    923px 67px 0 0 rgba(255,255,255,0.4),
+    989px 234px 0 0 rgba(255,255,255,0.8),
+    1045px 112px 0 0 rgba(255,255,255,0.6);
+  width: 1px;
+  height: 1px;
+}
+
+/* LCD 7-segment style number display */
+.lcd {
+  font-family: 'Share Tech Mono', monospace;
+  letter-spacing: 0.15em;
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* Smooth focus outline for accessibility */
+button:focus-visible {
+  outline: 2px solid #6EE7B7;
+  outline-offset: 2px;
+}
+
+/* Prevent selection during PTT hold */
+.ptt-active {
+  user-select: none;
+  -webkit-user-select: none;
+}
