@@ -67,7 +67,6 @@ export function releaseStream(): void {
 }
 
 // ── Receiver ─────────────────────────────────────────────
-// Buffer chunks between speaker_start → speaker_end, then play via MediaSource
 let incomingBuffer: ArrayBuffer[] = [];
 let activeMimeType = '';
 
@@ -87,36 +86,36 @@ export function playReceived(): void {
   if (incomingBuffer.length === 0) return;
 
   const mimeType = activeMimeType || getSupportedMimeType() || 'audio/webm;codecs=opus';
-  const chunks = incomingBuffer.splice(0); // take all chunks and clear buffer
+  const chunks = incomingBuffer.splice(0);
 
-  console.log(`[relay] playing via MSE, ${chunks.length} chunks, mimeType=${mimeType}`);
-
-  // MediaRecorder produces a streaming WebM — must use MediaSource API to play it.
-  // new Audio(blobUrl) fails with NotSupportedError because the WebM lacks
-  // seekable index metadata that <audio> requires for file playback.
   if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mimeType)) {
     playViaMediaSource(chunks, mimeType);
   } else {
-    // Fallback for browsers without MSE support (e.g. older iOS Safari)
-    playViaBlob(chunks, mimeType);
+    playViaAudioContext(chunks, mimeType);
   }
 }
 
+// Primary: MediaSource API with sequence mode
+// play() is called AFTER endOfStream so data is fully ready
 function playViaMediaSource(chunks: ArrayBuffer[], mimeType: string): void {
+  console.log(`[relay] MSE playback, ${chunks.length} chunks, type=${mimeType}`);
   const ms = new MediaSource();
   const audio = new Audio();
   const msUrl = URL.createObjectURL(ms);
   audio.src = msUrl;
 
   ms.addEventListener('sourceopen', () => {
-    URL.revokeObjectURL(msUrl); // URL no longer needed once attached
+    URL.revokeObjectURL(msUrl);
 
     let sb: SourceBuffer;
     try {
       sb = ms.addSourceBuffer(mimeType);
+      // sequence mode: browser assigns timestamps, ignores MediaRecorder's
+      // internal timestamps which can cause "jumped backwards" errors
+      sb.mode = 'sequence';
     } catch (e) {
-      console.error('[relay] addSourceBuffer failed', e);
-      ms.endOfStream('decode');
+      console.error('[relay] addSourceBuffer failed', e, '— falling back to AudioContext');
+      playViaAudioContext(chunks, mimeType);
       return;
     }
 
@@ -124,31 +123,60 @@ function playViaMediaSource(chunks: ArrayBuffer[], mimeType: string): void {
 
     const appendNext = () => {
       if (idx >= chunks.length) {
+        // All chunks appended — finalize and start playing
         try { ms.endOfStream(); } catch { /* already ended */ }
+        audio.play().catch((e) => {
+          console.error('[relay] MSE play() rejected', e);
+          // Last resort: AudioContext
+          playViaAudioContext(chunks, mimeType);
+        });
         return;
       }
       try {
         sb.appendBuffer(chunks[idx++]);
       } catch (e) {
-        console.error('[relay] appendBuffer failed', e);
+        console.error('[relay] appendBuffer error', e);
+        // Skip bad chunk and continue
+        appendNext();
       }
     };
 
     sb.addEventListener('updateend', appendNext);
-    sb.addEventListener('error', (e) => console.error('[relay] SourceBuffer error', e));
+    sb.addEventListener('error', (e) => {
+      console.error('[relay] SourceBuffer error', e);
+      playViaAudioContext(chunks, mimeType);
+    });
 
     appendNext();
   }, { once: true });
 
   audio.addEventListener('error', (e) => console.error('[relay] MSE audio error', e));
-  audio.play().catch((e) => console.error('[relay] MSE play() rejected', e));
 }
 
-function playViaBlob(chunks: ArrayBuffer[], mimeType: string): void {
-  const blob = new Blob(chunks, { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  audio.onended = () => URL.revokeObjectURL(url);
-  audio.onerror = (e) => { console.error('[relay] blob audio error', e); URL.revokeObjectURL(url); };
-  audio.play().catch((e) => { console.error('[relay] blob play() rejected', e); URL.revokeObjectURL(url); });
+// Fallback: AudioContext.decodeAudioData — works when MSE is unavailable
+let sharedCtx: AudioContext | null = null;
+function getAudioContext(): AudioContext {
+  if (!sharedCtx || sharedCtx.state === 'closed') {
+    sharedCtx = new AudioContext();
+  }
+  return sharedCtx;
+}
+
+async function playViaAudioContext(chunks: ArrayBuffer[], mimeType: string): Promise<void> {
+  console.log(`[relay] AudioContext fallback, ${chunks.length} chunks`);
+  try {
+    const blob = new Blob(chunks, { type: mimeType });
+    const arrayBuffer = await blob.arrayBuffer();
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const decoded = await ctx.decodeAudioData(arrayBuffer);
+    const source = ctx.createBufferSource();
+    source.buffer = decoded;
+    source.connect(ctx.destination);
+    source.start(0);
+    console.log('[relay] AudioContext playing');
+    source.onended = () => source.disconnect();
+  } catch (e) {
+    console.error('[relay] AudioContext playback failed', e);
+  }
 }
