@@ -1,8 +1,8 @@
 // WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
 //
-// Capture: AudioWorklet resamples from device native rate → 16 kHz before sending.
-//          Fallback to ScriptProcessorNode also resamples to 16 kHz.
-//          Transmitted PCM is always 16 kHz regardless of sender device.
+// Capture: fresh AudioContext per transmission prevents worklet state issues on mobile.
+//          AudioWorklet resamples from device native rate → 16 kHz.
+//          ScriptProcessorNode fallback also resamples to 16 kHz.
 // Playback: chunks scheduled immediately on AudioContext timeline.
 //           Audio routed through a radio bandpass + saturation chain.
 
@@ -33,9 +33,11 @@ export async function startCapture(
     });
   }
 
-  if (!txCtx || txCtx.state === 'closed') {
-    txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  }
+  // Always create a fresh AudioContext per PTT press.
+  // Reusing a context across transmissions causes AudioWorklet to misbehave on
+  // some mobile browsers (addModule no-ops, processor not re-initialized),
+  // which silently falls back to ScriptProcessor with wrong sample-rate ratio.
+  txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
   if (txCtx.state === 'suspended') await txCtx.resume();
 
   sourceNode = txCtx.createMediaStreamSource(localStream);
@@ -48,12 +50,19 @@ export async function startCapture(
     const wn = new AudioWorkletNode(txCtx, 'audio-capture-processor', {
       processorOptions: { chunkSize: WORKLET_CHUNK },
     });
-    wn.port.onmessage = (e) => onChunk(e.data as ArrayBuffer);
+    wn.port.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) {
+        onChunk(e.data);
+      }
+    };
     captureNode = wn;
     usingWorklet = true;
   } catch {
-    // AudioWorklet unavailable — ScriptProcessorNode with manual resampling to 16 kHz
-    const nativeRate = txCtx.sampleRate;
+    // Fallback: ScriptProcessorNode with manual resampling to 16 kHz.
+    // Use MediaStreamTrack.getSettings() for the true hardware sample rate —
+    // txCtx.sampleRate may report 16000 even when hardware runs at 48000.
+    const track = localStream.getAudioTracks()[0];
+    const nativeRate = track?.getSettings().sampleRate ?? txCtx.sampleRate;
     const ratio = nativeRate / SAMPLE_RATE;
     const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
     sp.onaudioprocess = (e) => {
@@ -77,8 +86,7 @@ export async function startCapture(
   captureNode.connect(silentOut);
   silentOut.connect(txCtx.destination);
 
-  console.log(`[relay] capture @ ${txCtx.sampleRate}Hz via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} → resampled to ${SAMPLE_RATE}Hz`);
-  // Worklet resamples to 16 kHz internally — transmitted PCM is always SAMPLE_RATE
+  console.log(`[relay] TX via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate}Hz → ${SAMPLE_RATE}Hz`);
   return SAMPLE_RATE;
 }
 
@@ -88,14 +96,15 @@ export function stopCapture(): void {
   silentOut?.disconnect();
   if (captureNode instanceof AudioWorkletNode) captureNode.port.close();
   captureNode = sourceNode = silentOut = null;
+  // Close the context — a fresh one is created on the next startCapture call
+  txCtx?.close();
+  txCtx = null;
 }
 
 export function releaseStream(): void {
   stopCapture();
   localStream?.getTracks().forEach((t) => t.stop());
   localStream = null;
-  txCtx?.close();
-  txCtx = null;
 }
 
 export function getSupportedMimeType(): string {
@@ -191,7 +200,7 @@ export function receiveChunk(data: ArrayBuffer): void {
 
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(input);  // route through radio chain
+    src.connect(input);
     src.start(startAt);
     src.onended = () => src.disconnect();
 
