@@ -83,8 +83,12 @@ export function getSupportedMimeType(): string {
 }
 
 // ── Receiver ─────────────────────────────────────────────
-let incomingChunks: Int16Array[] = [];
+// Streaming: each chunk is scheduled for immediate playback as it arrives.
+// AudioContext provides a precise timeline so chunks play back-to-back
+// without gaps, instead of buffering everything until speaker_end.
+
 let rxCtx: AudioContext | null = null;
+let nextPlayTime = 0; // AudioContext time when next chunk should start
 
 function getRxCtx(): AudioContext {
   if (!rxCtx || rxCtx.state === 'closed') {
@@ -94,45 +98,44 @@ function getRxCtx(): AudioContext {
 }
 
 export function beginReceiving(_mimeType: string): void {
-  console.log('[relay] beginReceiving (PCM)');
-  incomingChunks = [];
+  console.log('[relay] beginReceiving — streaming PCM');
+  nextPlayTime = 0; // reset schedule for new transmission
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
-  console.log(`[relay] receiveChunk ${data.byteLength}B`);
-  incomingChunks.push(new Int16Array(data));
-}
-
-export function playReceived(): void {
-  console.log(`[relay] playReceived chunks=${incomingChunks.length}`);
-  if (incomingChunks.length === 0) return;
-
-  const totalSamples = incomingChunks.reduce((s, a) => s + a.length, 0);
-  const f32 = new Float32Array(totalSamples);
-  let off = 0;
-  for (const chunk of incomingChunks) {
-    for (let i = 0; i < chunk.length; i++) {
-      f32[off++] = chunk[i] / 32768;
-    }
+  const i16 = new Int16Array(data);
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) {
+    f32[i] = i16[i] / 32768;
   }
-  incomingChunks = [];
 
   const ctx = getRxCtx();
 
-  const doPlay = () => {
+  const scheduleChunk = () => {
     const buf = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
     buf.copyToChannel(f32, 0);
+
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    src.start(0);
-    console.log(`[relay] playing ${f32.length} PCM samples`);
+
+    // Schedule right after the previous chunk, or 20 ms from now if we fell behind
+    const startAt = Math.max(ctx.currentTime + 0.02, nextPlayTime);
+    src.start(startAt);
+    nextPlayTime = startAt + buf.duration;
+
     src.onended = () => src.disconnect();
+    console.log(`[relay] scheduled chunk ${data.byteLength}B at +${(startAt - ctx.currentTime).toFixed(3)}s`);
   };
 
   if (ctx.state === 'suspended') {
-    ctx.resume().then(doPlay).catch((e) => console.error('[relay] resume failed', e));
+    ctx.resume().then(scheduleChunk).catch((e) => console.error('[relay] resume failed', e));
   } else {
-    doPlay();
+    scheduleChunk();
   }
+}
+
+export function playReceived(): void {
+  // Streaming mode: chunks already scheduled — nothing to do on speaker_end
+  nextPlayTime = 0;
 }
