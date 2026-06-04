@@ -1,25 +1,25 @@
 // WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
 //
-// MediaRecorder WebM output is a live-streaming format (no seek index,
-// unbounded Segment) that neither <audio> blob URLs nor AudioContext
-// decodeAudioData() can reliably decode across browsers/OS combos.
-// Raw Int16 PCM avoids all codec negotiation and container issues.
+// Capture: AudioWorklet (audio thread) → no main-thread glitches on mobile.
+//          Falls back to ScriptProcessorNode if AudioWorklet unavailable.
+// Transport: Int16 PCM binary frames — no codec/container issues.
+// Playback: each incoming chunk scheduled immediately on AudioContext timeline
+//           so audio starts within one network RTT, not after PTT release.
 
 const SAMPLE_RATE = 16000;
-const SCRIPT_BUFFER = 2048; // ~128 ms per chunk at 16 kHz → 4 096 bytes/chunk
+const WORKLET_CHUNK = 512;  // samples per chunk = 32 ms at 16 kHz, 1 024 bytes
+const FALLBACK_BUF = 1024;  // ScriptProcessor buffer (64 ms) — used only if Worklet fails
 
 // ── Sender ──────────────────────────────────────────────
 let localStream: MediaStream | null = null;
 let txCtx: AudioContext | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
-let processor: ScriptProcessorNode | null = null;
+let captureNode: AudioWorkletNode | ScriptProcessorNode | null = null;
 let silentOut: GainNode | null = null;
 
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
 ): Promise<void> {
-  console.log('[relay] startCapture (PCM)');
-
   if (!localStream) {
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -39,34 +39,46 @@ export async function startCapture(
   if (txCtx.state === 'suspended') await txCtx.resume();
 
   sourceNode = txCtx.createMediaStreamSource(localStream);
-  processor  = txCtx.createScriptProcessor(SCRIPT_BUFFER, 1, 1);
-  silentOut  = txCtx.createGain();
-  silentOut.gain.value = 0; // capture only — no local playback
+  silentOut = txCtx.createGain();
+  silentOut.gain.value = 0; // capture only — no local echo
 
-  processor.onaudioprocess = (e) => {
-    const f32 = e.inputBuffer.getChannelData(0);
-    const i16 = new Int16Array(f32.length);
-    for (let i = 0; i < f32.length; i++) {
-      const s = Math.max(-1, Math.min(1, f32[i]));
-      i16[i] = s < 0 ? s * 32768 : s * 32767;
-    }
-    console.log(`[relay] sending PCM chunk ${i16.byteLength}B`);
-    onChunk(i16.buffer);
-  };
+  let usingWorklet = false;
+  try {
+    await txCtx.audioWorklet.addModule('/audio-capture-processor.js');
+    const wn = new AudioWorkletNode(txCtx, 'audio-capture-processor', {
+      processorOptions: { chunkSize: WORKLET_CHUNK },
+    });
+    wn.port.onmessage = (e) => onChunk(e.data as ArrayBuffer);
+    captureNode = wn;
+    usingWorklet = true;
+  } catch {
+    // AudioWorklet unavailable — fall back to (deprecated) ScriptProcessorNode
+    const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
+    sp.onaudioprocess = (e) => {
+      const f32 = e.inputBuffer.getChannelData(0);
+      const i16 = new Int16Array(f32.length);
+      for (let i = 0; i < f32.length; i++) {
+        const s = Math.max(-1, Math.min(1, f32[i]));
+        i16[i] = s < 0 ? s * 32768 : s * 32767;
+      }
+      onChunk(i16.buffer);
+    };
+    captureNode = sp;
+  }
 
-  sourceNode.connect(processor);
-  processor.connect(silentOut);
+  sourceNode.connect(captureNode);
+  captureNode.connect(silentOut);   // must reach destination for processing to run
   silentOut.connect(txCtx.destination);
 
-  console.log(`[relay] PCM capture started @ ${txCtx.sampleRate} Hz`);
+  console.log(`[relay] capture started via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate} Hz`);
 }
 
 export function stopCapture(): void {
-  processor?.disconnect();
+  captureNode?.disconnect();
   sourceNode?.disconnect();
   silentOut?.disconnect();
-  processor = sourceNode = silentOut = null;
-  console.log('[relay] capture stopped');
+  if (captureNode instanceof AudioWorkletNode) captureNode.port.close();
+  captureNode = sourceNode = silentOut = null;
 }
 
 export function releaseStream(): void {
@@ -77,18 +89,18 @@ export function releaseStream(): void {
   txCtx = null;
 }
 
-// Kept for protocol compatibility — PCM mode doesn't need a MIME type
+// Kept for protocol compatibility — PCM transport doesn't need a MIME type
 export function getSupportedMimeType(): string {
   return '';
 }
 
 // ── Receiver ─────────────────────────────────────────────
-// Streaming: each chunk is scheduled for immediate playback as it arrives.
-// AudioContext provides a precise timeline so chunks play back-to-back
-// without gaps, instead of buffering everything until speaker_end.
+// Each incoming chunk is scheduled on the AudioContext timeline immediately.
+// AudioContext.currentTime is the precise clock; chunks play back-to-back
+// without gaps or the full-transmission delay of the old buffer-then-play approach.
 
 let rxCtx: AudioContext | null = null;
-let nextPlayTime = 0; // AudioContext time when next chunk should start
+let nextPlayTime = 0;
 
 function getRxCtx(): AudioContext {
   if (!rxCtx || rxCtx.state === 'closed') {
@@ -98,8 +110,7 @@ function getRxCtx(): AudioContext {
 }
 
 export function beginReceiving(_mimeType: string): void {
-  console.log('[relay] beginReceiving — streaming PCM');
-  nextPlayTime = 0; // reset schedule for new transmission
+  nextPlayTime = 0;
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
@@ -111,31 +122,33 @@ export function receiveChunk(data: ArrayBuffer): void {
 
   const ctx = getRxCtx();
 
-  const scheduleChunk = () => {
+  const schedule = () => {
+    const now = ctx.currentTime;
+
+    // If we fell behind by >150 ms (e.g. tab was hidden), resync to now
+    if (nextPlayTime < now - 0.15) nextPlayTime = 0;
+
+    const startAt = Math.max(now + 0.01, nextPlayTime);
     const buf = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
     buf.copyToChannel(f32, 0);
 
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-
-    // Schedule right after the previous chunk, or 20 ms from now if we fell behind
-    const startAt = Math.max(ctx.currentTime + 0.02, nextPlayTime);
     src.start(startAt);
-    nextPlayTime = startAt + buf.duration;
-
     src.onended = () => src.disconnect();
-    console.log(`[relay] scheduled chunk ${data.byteLength}B at +${(startAt - ctx.currentTime).toFixed(3)}s`);
+
+    nextPlayTime = startAt + buf.duration;
   };
 
   if (ctx.state === 'suspended') {
-    ctx.resume().then(scheduleChunk).catch((e) => console.error('[relay] resume failed', e));
+    ctx.resume().then(schedule).catch(console.error);
   } else {
-    scheduleChunk();
+    schedule();
   }
 }
 
 export function playReceived(): void {
-  // Streaming mode: chunks already scheduled — nothing to do on speaker_end
+  // Streaming mode: chunks already scheduled — reset for next transmission
   nextPlayTime = 0;
 }
