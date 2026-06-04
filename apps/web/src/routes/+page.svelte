@@ -27,6 +27,7 @@
   onMount(() => {
     callsignInput = localStorage.getItem('callsign') ?? '';
     freqInput = localStorage.getItem('lastFrequency') ?? '';
+    initWebRTC(null); // Setup WebRTC signaling handlers early
     connect();
   });
 

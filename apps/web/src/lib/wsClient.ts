@@ -87,6 +87,10 @@ function _connect(): void {
       case 'joined':
         sessionId.set(msg.sessionId);
         members.set(msg.members);
+        // Update TURN credentials now that we have them from the server
+        import('./webrtc.js').then(({ initWebRTC }) => {
+          initWebRTC(msg.turnCredentials);
+        });
         break;
 
       case 'member_joined':
