@@ -127,7 +127,7 @@ function _connect(): void {
         speakerCallsign.set(msg.callsign);
         speakerSessionId.set(msg.sessionId);
         pttState.set('idle'); // we're in receive mode
-        import('./audio/relay.js').then(({ beginReceiving }) => beginReceiving(msg.mimeType ?? ''));
+        import('./audio/relay.js').then(({ beginReceiving }) => beginReceiving(msg.mimeType ?? '', msg.sampleRate));
         break;
 
       case 'speaker_end':

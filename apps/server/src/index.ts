@@ -133,6 +133,7 @@ app.ws<UserData>('/*', {
           callsign: session.callsign,
           sessionId,
           mimeType: msg.mimeType,
+          sampleRate: msg.sampleRate,
         }, sessionId);
 
         console.log(`[PTT] ${session.callsign} TX on ${session.frequency}`);

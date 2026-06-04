@@ -21,15 +21,13 @@ export async function onPTTDown(event: PointerEvent): Promise<void> {
   isHolding = true;
   pttState.set('transmitting');
 
-  send({ type: 'ptt_start' });
-
   try {
-    await startCapture((chunk) => sendBinary(chunk));
+    const sampleRate = await startCapture((chunk) => sendBinary(chunk));
+    send({ type: 'ptt_start', sampleRate });
   } catch (e) {
     console.error('[PTT] Failed to start capture', e);
     isHolding = false;
     pttState.set('idle');
-    send({ type: 'ptt_end' });
   }
 }
 

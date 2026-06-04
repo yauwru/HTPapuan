@@ -15,7 +15,7 @@ export interface TurnCredentials {
 export type ClientMessage =
   | { type: 'join'; frequency: string; callsign: string; password?: string }
   | { type: 'leave' }
-  | { type: 'ptt_start'; mimeType?: string }
+  | { type: 'ptt_start'; mimeType?: string; sampleRate?: number }
   | { type: 'ptt_end' }
   | { type: 'offer'; to: string; sdp: string }
   | { type: 'answer'; to: string; sdp: string }
@@ -29,7 +29,7 @@ export type ServerMessage =
   | { type: 'joined'; sessionId: string; members: Member[]; turnCredentials: TurnCredentials | null }
   | { type: 'member_joined'; member: Member }
   | { type: 'member_left'; callsign: string; sessionId: string }
-  | { type: 'speaker_start'; callsign: string; sessionId: string; mimeType?: string }
+  | { type: 'speaker_start'; callsign: string; sessionId: string; mimeType?: string; sampleRate?: number }
   | { type: 'speaker_end'; callsign: string }
   | { type: 'channel_busy'; speakerCallsign: string }
   | { type: 'offer'; from: string; sdp: string }

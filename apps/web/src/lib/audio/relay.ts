@@ -19,7 +19,7 @@ let silentOut: GainNode | null = null;
 
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
-): Promise<void> {
+): Promise<number> {
   if (!localStream) {
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -70,7 +70,9 @@ export async function startCapture(
   captureNode.connect(silentOut);   // must reach destination for processing to run
   silentOut.connect(txCtx.destination);
 
-  console.log(`[relay] capture started via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate} Hz`);
+  const actualRate = txCtx.sampleRate;
+  console.log(`[relay] capture started via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${actualRate} Hz`);
+  return actualRate;
 }
 
 export function stopCapture(): void {
@@ -101,6 +103,7 @@ export function getSupportedMimeType(): string {
 
 let rxCtx: AudioContext | null = null;
 let nextPlayTime = 0;
+let incomingSampleRate = SAMPLE_RATE;
 
 function getRxCtx(): AudioContext {
   if (!rxCtx || rxCtx.state === 'closed') {
@@ -109,7 +112,8 @@ function getRxCtx(): AudioContext {
   return rxCtx;
 }
 
-export function beginReceiving(_mimeType: string): void {
+export function beginReceiving(_mimeType: string, sampleRate?: number): void {
+  incomingSampleRate = sampleRate ?? SAMPLE_RATE;
   nextPlayTime = 0;
 }
 
@@ -129,7 +133,7 @@ export function receiveChunk(data: ArrayBuffer): void {
     if (nextPlayTime < now - 0.15) nextPlayTime = 0;
 
     const startAt = Math.max(now + 0.01, nextPlayTime);
-    const buf = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
+    const buf = ctx.createBuffer(1, f32.length, incomingSampleRate);
     buf.copyToChannel(f32, 0);
 
     const src = ctx.createBufferSource();
