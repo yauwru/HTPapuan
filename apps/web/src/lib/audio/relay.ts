@@ -19,6 +19,7 @@ let localStream: MediaStream | null = null;
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
 ): Promise<void> {
+  console.log('[relay] startCapture');
   if (!localStream) {
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -41,10 +42,12 @@ export async function startCapture(
   mediaRecorder.ondataavailable = async (event) => {
     if (event.data.size > 0) {
       const buffer = await event.data.arrayBuffer();
+      console.log(`[relay] sending chunk ${buffer.byteLength}B`);
       onChunk(buffer);
     }
   };
 
+  console.log(`[relay] recording started, mimeType=${mediaRecorder.mimeType}`);
   mediaRecorder.start(250); // 250ms chunks
 }
 
@@ -69,24 +72,28 @@ let incomingBuffer: ArrayBuffer[] = [];
 let activeMimeType = '';
 
 export function beginReceiving(mimeType: string): void {
+  console.log(`[relay] beginReceiving mimeType=${mimeType}`);
   incomingBuffer = [];
   activeMimeType = mimeType;
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
+  console.log(`[relay] receiveChunk ${data.byteLength}B`);
   incomingBuffer.push(data);
 }
 
 export function playReceived(): void {
+  console.log(`[relay] playReceived chunks=${incomingBuffer.length}`);
   if (incomingBuffer.length === 0) return;
 
   const mimeType = activeMimeType || getSupportedMimeType() || 'audio/webm';
   const blob = new Blob(incomingBuffer, { type: mimeType });
   incomingBuffer = [];
 
+  console.log(`[relay] playing blob size=${blob.size} type=${mimeType}`);
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
   audio.onended = () => URL.revokeObjectURL(url);
-  audio.onerror = () => URL.revokeObjectURL(url);
-  audio.play().catch(() => URL.revokeObjectURL(url));
+  audio.onerror = (e) => { console.error('[relay] audio error', e); URL.revokeObjectURL(url); };
+  audio.play().catch((e) => { console.error('[relay] play() rejected', e); URL.revokeObjectURL(url); });
 }

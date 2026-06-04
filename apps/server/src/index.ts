@@ -59,11 +59,16 @@ app.ws<UserData>('/*', {
       if (!session.frequency) return;
       const room = getRoom(session.frequency);
       if (!room || room.pttHolder !== sessionId) return;
+      // Copy the buffer — uWebSockets reuses the underlying memory after callback returns
+      const copy = Buffer.from(rawMessage);
+      let relayed = 0;
       for (const member of room.members.values()) {
         if (member.id !== sessionId) {
-          (member.ws as WS).send(rawMessage, true);
+          (member.ws as WS).send(copy, true);
+          relayed++;
         }
       }
+      if (relayed > 0) console.log(`[AUD] relayed ${copy.byteLength}B to ${relayed} listeners`);
       return;
     }
 
