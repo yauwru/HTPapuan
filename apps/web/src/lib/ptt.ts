@@ -2,7 +2,7 @@ import { get } from 'svelte/store';
 import { pttState, isInChannel } from './stores/channel.js';
 import { send, sendBinary } from './wsClient.js';
 import { resumeAudio, playSquelchClose, playBusyTone } from './audio/squelch.js';
-import { getSupportedMimeType, startCapture, stopCapture } from './audio/relay.js';
+import { startCapture, stopCapture } from './audio/relay.js';
 
 let isHolding = false;
 
@@ -21,8 +21,7 @@ export async function onPTTDown(event: PointerEvent): Promise<void> {
   isHolding = true;
   pttState.set('transmitting');
 
-  const mimeType = getSupportedMimeType();
-  send({ type: 'ptt_start', mimeType });
+  send({ type: 'ptt_start' });
 
   try {
     await startCapture((chunk) => sendBinary(chunk));

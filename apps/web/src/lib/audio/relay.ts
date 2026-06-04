@@ -1,25 +1,25 @@
-// WebSocket binary audio relay — sender & receiver
+// WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
+//
+// MediaRecorder WebM output is a live-streaming format (no seek index,
+// unbounded Segment) that neither <audio> blob URLs nor AudioContext
+// decodeAudioData() can reliably decode across browsers/OS combos.
+// Raw Int16 PCM avoids all codec negotiation and container issues.
 
-const MIME_TYPES = [
-  'audio/webm;codecs=opus',
-  'audio/webm',
-  'audio/ogg;codecs=opus',
-  'audio/ogg',
-  'audio/mp4',
-];
-
-export function getSupportedMimeType(): string {
-  return MIME_TYPES.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
-}
+const SAMPLE_RATE = 16000;
+const SCRIPT_BUFFER = 2048; // ~128 ms per chunk at 16 kHz → 4 096 bytes/chunk
 
 // ── Sender ──────────────────────────────────────────────
-let mediaRecorder: MediaRecorder | null = null;
 let localStream: MediaStream | null = null;
+let txCtx: AudioContext | null = null;
+let sourceNode: MediaStreamAudioSourceNode | null = null;
+let processor: ScriptProcessorNode | null = null;
+let silentOut: GainNode | null = null;
 
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
 ): Promise<void> {
-  console.log('[relay] startCapture');
+  console.log('[relay] startCapture (PCM)');
+
   if (!localStream) {
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -27,156 +27,112 @@ export async function startCapture(
         noiseSuppression: true,
         autoGainControl: true,
         channelCount: 1,
-        sampleRate: 16000,
+        sampleRate: SAMPLE_RATE,
       },
       video: false,
     });
   }
 
-  const mimeType = getSupportedMimeType();
-  mediaRecorder = new MediaRecorder(localStream, {
-    mimeType: mimeType || undefined,
-    audioBitsPerSecond: 16000,
-  });
+  if (!txCtx || txCtx.state === 'closed') {
+    txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  }
+  if (txCtx.state === 'suspended') await txCtx.resume();
 
-  mediaRecorder.ondataavailable = async (event) => {
-    if (event.data.size > 0) {
-      const buffer = await event.data.arrayBuffer();
-      console.log(`[relay] sending chunk ${buffer.byteLength}B`);
-      onChunk(buffer);
+  sourceNode = txCtx.createMediaStreamSource(localStream);
+  processor  = txCtx.createScriptProcessor(SCRIPT_BUFFER, 1, 1);
+  silentOut  = txCtx.createGain();
+  silentOut.gain.value = 0; // capture only — no local playback
+
+  processor.onaudioprocess = (e) => {
+    const f32 = e.inputBuffer.getChannelData(0);
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = s < 0 ? s * 32768 : s * 32767;
     }
+    console.log(`[relay] sending PCM chunk ${i16.byteLength}B`);
+    onChunk(i16.buffer);
   };
 
-  console.log(`[relay] recording started, mimeType=${mediaRecorder.mimeType}`);
-  mediaRecorder.start(250); // 250ms chunks
+  sourceNode.connect(processor);
+  processor.connect(silentOut);
+  silentOut.connect(txCtx.destination);
+
+  console.log(`[relay] PCM capture started @ ${txCtx.sampleRate} Hz`);
 }
 
 export function stopCapture(): void {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-  }
-  mediaRecorder = null;
+  processor?.disconnect();
+  sourceNode?.disconnect();
+  silentOut?.disconnect();
+  processor = sourceNode = silentOut = null;
+  console.log('[relay] capture stopped');
 }
 
 export function releaseStream(): void {
   stopCapture();
-  if (localStream) {
-    for (const track of localStream.getTracks()) track.stop();
-    localStream = null;
-  }
+  localStream?.getTracks().forEach((t) => t.stop());
+  localStream = null;
+  txCtx?.close();
+  txCtx = null;
+}
+
+// Kept for protocol compatibility — PCM mode doesn't need a MIME type
+export function getSupportedMimeType(): string {
+  return '';
 }
 
 // ── Receiver ─────────────────────────────────────────────
-let incomingBuffer: ArrayBuffer[] = [];
-let activeMimeType = '';
+let incomingChunks: Int16Array[] = [];
+let rxCtx: AudioContext | null = null;
 
-export function beginReceiving(mimeType: string): void {
-  console.log(`[relay] beginReceiving mimeType=${mimeType}`);
-  incomingBuffer = [];
-  activeMimeType = mimeType;
+function getRxCtx(): AudioContext {
+  if (!rxCtx || rxCtx.state === 'closed') {
+    rxCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  }
+  return rxCtx;
+}
+
+export function beginReceiving(_mimeType: string): void {
+  console.log('[relay] beginReceiving (PCM)');
+  incomingChunks = [];
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
   console.log(`[relay] receiveChunk ${data.byteLength}B`);
-  incomingBuffer.push(data);
+  incomingChunks.push(new Int16Array(data));
 }
 
 export function playReceived(): void {
-  console.log(`[relay] playReceived chunks=${incomingBuffer.length}`);
-  if (incomingBuffer.length === 0) return;
+  console.log(`[relay] playReceived chunks=${incomingChunks.length}`);
+  if (incomingChunks.length === 0) return;
 
-  const mimeType = activeMimeType || getSupportedMimeType() || 'audio/webm;codecs=opus';
-  const chunks = incomingBuffer.splice(0);
-
-  if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mimeType)) {
-    playViaMediaSource(chunks, mimeType);
-  } else {
-    playViaAudioContext(chunks, mimeType);
-  }
-}
-
-// Primary: MediaSource API with sequence mode
-// play() is called AFTER endOfStream so data is fully ready
-function playViaMediaSource(chunks: ArrayBuffer[], mimeType: string): void {
-  console.log(`[relay] MSE playback, ${chunks.length} chunks, type=${mimeType}`);
-  const ms = new MediaSource();
-  const audio = new Audio();
-  const msUrl = URL.createObjectURL(ms);
-  audio.src = msUrl;
-
-  ms.addEventListener('sourceopen', () => {
-    URL.revokeObjectURL(msUrl);
-
-    let sb: SourceBuffer;
-    try {
-      sb = ms.addSourceBuffer(mimeType);
-      // sequence mode: browser assigns timestamps, ignores MediaRecorder's
-      // internal timestamps which can cause "jumped backwards" errors
-      sb.mode = 'sequence';
-    } catch (e) {
-      console.error('[relay] addSourceBuffer failed', e, '— falling back to AudioContext');
-      playViaAudioContext(chunks, mimeType);
-      return;
+  const totalSamples = incomingChunks.reduce((s, a) => s + a.length, 0);
+  const f32 = new Float32Array(totalSamples);
+  let off = 0;
+  for (const chunk of incomingChunks) {
+    for (let i = 0; i < chunk.length; i++) {
+      f32[off++] = chunk[i] / 32768;
     }
-
-    let idx = 0;
-
-    const appendNext = () => {
-      if (idx >= chunks.length) {
-        // All chunks appended — finalize and start playing
-        try { ms.endOfStream(); } catch { /* already ended */ }
-        audio.play().catch((e) => {
-          console.error('[relay] MSE play() rejected', e);
-          // Last resort: AudioContext
-          playViaAudioContext(chunks, mimeType);
-        });
-        return;
-      }
-      try {
-        sb.appendBuffer(chunks[idx++]);
-      } catch (e) {
-        console.error('[relay] appendBuffer error', e);
-        // Skip bad chunk and continue
-        appendNext();
-      }
-    };
-
-    sb.addEventListener('updateend', appendNext);
-    sb.addEventListener('error', (e) => {
-      console.error('[relay] SourceBuffer error', e);
-      playViaAudioContext(chunks, mimeType);
-    });
-
-    appendNext();
-  }, { once: true });
-
-  audio.addEventListener('error', (e) => console.error('[relay] MSE audio error', e));
-}
-
-// Fallback: AudioContext.decodeAudioData — works when MSE is unavailable
-let sharedCtx: AudioContext | null = null;
-function getAudioContext(): AudioContext {
-  if (!sharedCtx || sharedCtx.state === 'closed') {
-    sharedCtx = new AudioContext();
   }
-  return sharedCtx;
-}
+  incomingChunks = [];
 
-async function playViaAudioContext(chunks: ArrayBuffer[], mimeType: string): Promise<void> {
-  console.log(`[relay] AudioContext fallback, ${chunks.length} chunks`);
-  try {
-    const blob = new Blob(chunks, { type: mimeType });
-    const arrayBuffer = await blob.arrayBuffer();
-    const ctx = getAudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-    const decoded = await ctx.decodeAudioData(arrayBuffer);
-    const source = ctx.createBufferSource();
-    source.buffer = decoded;
-    source.connect(ctx.destination);
-    source.start(0);
-    console.log('[relay] AudioContext playing');
-    source.onended = () => source.disconnect();
-  } catch (e) {
-    console.error('[relay] AudioContext playback failed', e);
+  const ctx = getRxCtx();
+
+  const doPlay = () => {
+    const buf = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
+    buf.copyToChannel(f32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    console.log(`[relay] playing ${f32.length} PCM samples`);
+    src.onended = () => src.disconnect();
+  };
+
+  if (ctx.state === 'suspended') {
+    ctx.resume().then(doPlay).catch((e) => console.error('[relay] resume failed', e));
+  } else {
+    doPlay();
   }
 }
