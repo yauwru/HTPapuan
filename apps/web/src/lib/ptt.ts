@@ -1,8 +1,8 @@
 import { get } from 'svelte/store';
 import { pttState, isInChannel } from './stores/channel.js';
-import { send } from './wsClient.js';
+import { send, sendBinary } from './wsClient.js';
 import { resumeAudio, playSquelchClose, playBusyTone } from './audio/squelch.js';
-import { startTransmission, stopTransmission } from './webrtc.js';
+import { getSupportedMimeType, startCapture, stopCapture } from './audio/relay.js';
 
 let isHolding = false;
 
@@ -21,13 +21,13 @@ export async function onPTTDown(event: PointerEvent): Promise<void> {
   isHolding = true;
   pttState.set('transmitting');
 
-  send({ type: 'ptt_start' });
+  const mimeType = getSupportedMimeType();
+  send({ type: 'ptt_start', mimeType });
 
-  // Start WebRTC audio immediately (server will reject if channel busy)
   try {
-    await startTransmission();
+    await startCapture((chunk) => sendBinary(chunk));
   } catch (e) {
-    console.error('[PTT] Failed to start transmission', e);
+    console.error('[PTT] Failed to start capture', e);
     isHolding = false;
     pttState.set('idle');
     send({ type: 'ptt_end' });
@@ -42,7 +42,7 @@ export function onPTTUp(): void {
   if (state !== 'transmitting') return;
 
   pttState.set('idle');
-  stopTransmission();
+  stopCapture();
   send({ type: 'ptt_end' });
   playSquelchClose();
 }
@@ -54,7 +54,7 @@ export function onPTTCancel(): void {
 // Handle channel_busy response from server — called from wsClient
 export function onChannelBusy(): void {
   isHolding = false;
-  stopTransmission();
+  stopCapture();
   playBusyTone();
   // pttState is set to 'busy' by wsClient, then reset after 2s
 }

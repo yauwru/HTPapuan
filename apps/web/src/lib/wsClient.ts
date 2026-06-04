@@ -34,6 +34,12 @@ export function send(msg: ClientMessage): void {
   }
 }
 
+export function sendBinary(data: ArrayBuffer): void {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(data);
+  }
+}
+
 export function connect(): void {
   destroyed = false;
   _connect();
@@ -68,6 +74,11 @@ function _connect(): void {
   };
 
   ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      import('./audio/relay.js').then(({ receiveChunk }) => receiveChunk(event.data as ArrayBuffer));
+      return;
+    }
+
     if (typeof event.data !== 'string') return;
 
     // Handle pong for RTT measurement
@@ -116,11 +127,13 @@ function _connect(): void {
         speakerCallsign.set(msg.callsign);
         speakerSessionId.set(msg.sessionId);
         pttState.set('idle'); // we're in receive mode
+        import('./audio/relay.js').then(({ beginReceiving }) => beginReceiving(msg.mimeType ?? ''));
         break;
 
       case 'speaker_end':
         speakerCallsign.set(null);
         speakerSessionId.set(null);
+        import('./audio/relay.js').then(({ playReceived }) => playReceived());
         break;
 
       case 'channel_busy':

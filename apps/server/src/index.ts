@@ -50,10 +50,22 @@ app.ws<UserData>('/*', {
     console.log(`[+] ${sessionId} connected`);
   },
 
-  message(ws, rawMessage) {
+  message(ws, rawMessage, isBinary) {
     const { sessionId } = ws.getUserData();
     const session = getSession(sessionId);
     if (!session) return;
+
+    if (isBinary) {
+      if (!session.frequency) return;
+      const room = getRoom(session.frequency);
+      if (!room || room.pttHolder !== sessionId) return;
+      for (const member of room.members.values()) {
+        if (member.id !== sessionId) {
+          (member.ws as WS).send(rawMessage, true);
+        }
+      }
+      return;
+    }
 
     let msg: ClientMessage;
     try {
@@ -115,6 +127,7 @@ app.ws<UserData>('/*', {
           type: 'speaker_start',
           callsign: session.callsign,
           sessionId,
+          mimeType: msg.mimeType,
         }, sessionId);
 
         console.log(`[PTT] ${session.callsign} TX on ${session.frequency}`);
