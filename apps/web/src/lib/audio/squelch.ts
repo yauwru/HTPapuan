@@ -65,25 +65,51 @@ export function playBusyTone(): void {
   const ctx = getCtx();
   if (ctx.state !== 'running') return;
 
-  // Short double-beep indicating channel busy
-  [0, 0.15].forEach((offset) => {
+  // Loud warning: two short blips then one long alarm — "beep beep BEEEEEP"
+  const schedule = [
+    { offset: 0,    dur: 0.11 },
+    { offset: 0.17, dur: 0.11 },
+    { offset: 0.34, dur: 0.60 },
+  ];
+
+  for (const { offset, dur } of schedule) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-
-    osc.frequency.value = 440;
+    osc.frequency.value = 880;
     osc.type = 'sine';
-    gain.gain.value = 0;
-
     osc.connect(gain);
     gain.connect(ctx.destination);
 
-    const start = ctx.currentTime + offset;
-    gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(0.3, start + 0.02);
-    gain.gain.linearRampToValueAtTime(0, start + 0.12);
+    const t = ctx.currentTime + offset;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.6, t + 0.02);
+    gain.gain.setValueAtTime(0.6, t + dur - 0.05);
+    gain.gain.linearRampToValueAtTime(0, t + dur);
+    osc.start(t);
+    osc.stop(t + dur + 0.01);
+  }
+}
 
-    osc.start(start);
-    osc.stop(start + 0.13);
+export function playTextBeep(): void {
+  const ctx = getCtx();
+  if (ctx.state !== 'running') return;
+
+  // Soft two-tone ding — incoming text message
+  const tones = [1200, 1600];
+  tones.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const t = ctx.currentTime + i * 0.09;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.18, t + 0.01);
+    gain.gain.linearRampToValueAtTime(0, t + 0.08);
+    osc.start(t);
+    osc.stop(t + 0.09);
   });
 }
 

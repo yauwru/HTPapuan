@@ -139,6 +139,8 @@ function _connect(): void {
       case 'channel_busy':
         busyCallsign.set(msg.speakerCallsign);
         pttState.set('busy');
+        // Stop mic capture and play alarm (lazy import avoids circular dep with ptt.ts)
+        import('./ptt.js').then(({ onChannelBusy }) => onChannelBusy());
         setTimeout(() => {
           pttState.set('idle');
           busyCallsign.set(null);
@@ -147,6 +149,7 @@ function _connect(): void {
 
       case 'text_broadcast':
         addTextMessage({ callsign: msg.callsign, text: msg.text, timestamp: msg.timestamp });
+        import('./audio/squelch.js').then(({ playTextBeep }) => playTextBeep());
         break;
 
       case 'offer':
