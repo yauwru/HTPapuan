@@ -1,6 +1,5 @@
 import { get } from 'svelte/store';
 import { pttState, isInChannel } from './stores/channel.js';
-import { audioMode } from './stores/settings.js';
 import { send, sendBinary } from './wsClient.js';
 import { resumeAudio, playSquelchClose, playBusyTone } from './audio/squelch.js';
 import { startCapture, stopCapture } from './audio/relay.js';
@@ -23,8 +22,7 @@ export async function onPTTDown(event: PointerEvent): Promise<void> {
   pttState.set('transmitting');
 
   try {
-    const native = get(audioMode) === 'native';
-    const sampleRate = await startCapture((chunk) => sendBinary(chunk), native);
+    const sampleRate = await startCapture((chunk) => sendBinary(chunk));
     send({ type: 'ptt_start', sampleRate });
   } catch (e) {
     console.error('[PTT] Failed to start capture', e);

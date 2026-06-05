@@ -14,7 +14,6 @@
   import { connect, disconnect, joinChannel, leaveChannel } from '$lib/wsClient.js';
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
   import { playSquelchOpen } from '$lib/audio/squelch.js';
-  import { audioMode } from '$lib/stores/settings.js';
   import { audioBuffering } from '$lib/audio/relay.js';
   import SignalMeter from '$components/SignalMeter.svelte';
   import MemberList from '$components/MemberList.svelte';
@@ -159,40 +158,6 @@
         <div class="mt-2 h-px bg-slate-600/30"></div>
       </div>
 
-      <!-- Audio mode selector -->
-      <div class="bg-space-800 border border-slate-700/50 rounded-2xl p-4">
-        <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">Mode Perangkat</p>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            on:click={() => audioMode.set('auto')}
-            class="py-2 px-3 text-xs font-mono rounded-xl border transition-colors
-              {$audioMode === 'auto'
-                ? 'border-mint/60 text-mint bg-mint/10'
-                : 'border-slate-600 text-slate-500 hover:border-slate-500'}"
-          >
-            Laptop / PC
-          </button>
-          <button
-            type="button"
-            on:click={() => audioMode.set('native')}
-            class="py-2 px-3 text-xs font-mono rounded-xl border transition-colors
-              {$audioMode === 'native'
-                ? 'border-mint/60 text-mint bg-mint/10'
-                : 'border-slate-600 text-slate-500 hover:border-slate-500'}"
-          >
-            HP / Tablet
-          </button>
-        </div>
-        <p class="text-xs text-slate-600 font-mono mt-2">
-          {#if $audioMode === 'native'}
-            Rate asli perangkat &middot; stabil di HP/iPad
-          {:else}
-            Resample ke 16kHz &middot; hemat bandwidth
-          {/if}
-        </p>
-      </div>
-
       {#if joinError}
         <p class="text-red-400 text-sm font-mono text-center">{joinError}</p>
       {/if}
@@ -229,12 +194,9 @@
       <p class="lcd text-3xl text-amber-400 tracking-widest mt-1">{$currentFrequency}</p>
       <div class="flex items-center justify-between mt-1">
         <p class="text-xs font-mono text-slate-500">{$members.length} anggota aktif</p>
-        <div class="flex items-center gap-2">
-          {#if $speakerCallsign && $audioBuffering}
-            <span class="text-xs font-mono text-amber-400 animate-pulse">BUFFERING...</span>
-          {/if}
-          <p class="text-xs font-mono text-slate-600">{$audioMode === 'native' ? 'HP/Tablet' : 'Laptop/PC'}</p>
-        </div>
+        {#if $speakerCallsign && $audioBuffering}
+          <span class="text-xs font-mono text-amber-400 animate-pulse">BUFFERING...</span>
+        {/if}
       </div>
     </div>
 
