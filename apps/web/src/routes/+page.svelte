@@ -15,7 +15,7 @@
   import { connect, disconnect, joinChannel, leaveChannel } from '$lib/wsClient.js';
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
   import { playSquelchOpen } from '$lib/audio/squelch.js';
-  import { audioBuffering } from '$lib/audio/relay.js';
+  import { audioBuffering, requestMicPermission } from '$lib/audio/relay.js';
   import { initPttKey } from '$lib/stores/pttKey.js';
   import SignalMeter from '$components/SignalMeter.svelte';
   import MemberList from '$components/MemberList.svelte';
@@ -51,6 +51,8 @@
     connect();
     updateClock();
     clockTimer = setInterval(updateClock, 1000);
+    // Request mic permission upfront so first PTT press is never blocked by dialog
+    requestMicPermission();
   });
 
   onDestroy(() => {
@@ -245,24 +247,6 @@
       <MemberList />
     </div>
 
-    <!-- Visit log -->
-    {#if todayLog.length > 0}
-      <div class="w-full bg-space-800 border border-slate-700/30 rounded-xl p-3">
-        <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">Log Hari Ini</p>
-        <div class="max-h-36 overflow-y-auto space-y-1">
-          {#each [...todayLog].reverse() as entry (entry.sessionId + entry.joinedAt)}
-            <div class="grid font-mono text-xs" style="grid-template-columns: 1fr auto auto">
-              <span class="text-slate-300 truncate pr-2">{entry.callsign}</span>
-              <span class="text-slate-500 tabular-nums">{formatTs(entry.joinedAt)}</span>
-              <span class="pl-2 tabular-nums {entry.leftAt ? 'text-slate-600' : 'text-mint'}">
-                {entry.leftAt ? formatTs(entry.leftAt) : '• ONLINE'}
-              </span>
-            </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
     <!-- PTT Button (center of screen) -->
     <div class="w-full flex justify-center py-4">
       <PTTButton />
@@ -307,6 +291,26 @@
     >
       Keluar Channel
     </button>
+
+    <!-- Visit log — shown below leave button -->
+    <div class="w-full bg-space-800 border border-slate-700/30 rounded-xl p-3">
+      <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">Log Hari Ini</p>
+      {#if todayLog.length === 0}
+        <p class="text-xs font-mono text-slate-700">Belum ada log hari ini</p>
+      {:else}
+        <div class="max-h-40 overflow-y-auto space-y-1">
+          {#each [...todayLog].reverse() as entry (entry.sessionId + entry.joinedAt)}
+            <div class="grid font-mono text-xs gap-x-2" style="grid-template-columns: 1fr auto auto">
+              <span class="text-slate-300 truncate">{entry.callsign}</span>
+              <span class="text-slate-500 tabular-nums">{formatTs(entry.joinedAt)}</span>
+              <span class="tabular-nums {entry.leftAt ? 'text-slate-600' : 'text-mint'}">
+                {entry.leftAt ? formatTs(entry.leftAt) : '• ONLINE'}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
   {/if}
 
   <!-- Footer -->

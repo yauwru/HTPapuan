@@ -1,13 +1,14 @@
 // WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
 //
-// Capture: fresh AudioContext per PTT press to avoid worklet re-init issues on mobile.
+// Capture: fresh AudioContext + fresh getUserMedia stream per PTT press.
+//          Reusing a MediaStreamTrack across AudioContext instances causes audio
+//          degradation (slowmo / pitch issues) on iOS / Android after the first cycle.
 //          AudioWorklet resamples from device native rate → 16 kHz (linear interp).
-//          ScriptProcessorNode fallback also resamples to 16 kHz.
-// Playback: jitter buffer (PREBUFFER_CHUNKS × 32 ms ≈ 128 ms) before scheduling,
-//           so moderate network jitter does not cause gaps.
+//          ScriptProcessorNode fallback uses txCtx.sampleRate (actual context rate)
+//          NOT track.getSettings().sampleRate — iOS returns the *requested* rate
+//          (16 kHz) there, which yields ratio = 1 and causes 3× slowmo.
+// Playback: jitter buffer (PREBUFFER_CHUNKS × 32 ms ≈ 128 ms) before scheduling.
 //           Audio routed through a radio bandpass + saturation chain.
-//           Chunks are discarded while the tab is hidden; buffer resets on return
-//           so stale audio cannot burst-play and collide when the user comes back.
 
 import { writable } from 'svelte/store';
 
@@ -26,21 +27,19 @@ let silentOut: GainNode | null = null;
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
 ): Promise<number> {
-  if (!localStream) {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-        sampleRate: SAMPLE_RATE,
-      },
-      video: false,
-    });
-  }
+  // Always get a fresh stream — stopCapture releases it so this always runs.
+  localStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+      sampleRate: SAMPLE_RATE,
+    },
+    video: false,
+  });
 
-  // Always create a fresh AudioContext per PTT press — avoids worklet re-init
-  // issues on mobile where addModule on a reused context silently falls back.
+  // Fresh AudioContext per PTT press — avoids worklet re-init issues on mobile.
   txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
   if (txCtx.state === 'suspended') await txCtx.resume();
 
@@ -60,10 +59,10 @@ export async function startCapture(
     captureNode = wn;
     usingWorklet = true;
   } catch {
-    // Fallback: ScriptProcessorNode, resample to SAMPLE_RATE using true hardware rate
-    const track    = localStream.getAudioTracks()[0];
-    const hwRate   = track?.getSettings().sampleRate ?? txCtx.sampleRate;
-    const ratio    = hwRate / SAMPLE_RATE;
+    // Fallback: ScriptProcessorNode.
+    // Use txCtx.sampleRate (ACTUAL context rate, e.g. 44100 or 48000 on iOS) —
+    // NOT track.getSettings().sampleRate which iOS reports as the requested value.
+    const ratio = txCtx.sampleRate / SAMPLE_RATE;
     const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
     sp.onaudioprocess = (e) => {
       const f32    = e.inputBuffer.getChannelData(0);
@@ -98,12 +97,26 @@ export function stopCapture(): void {
   captureNode = sourceNode = silentOut = null;
   txCtx?.close();
   txCtx = null;
+  // Release stream — reusing a MediaStreamTrack across AudioContext instances
+  // accumulates state on iOS/Android and causes slowmo/distortion each cycle.
+  localStream?.getTracks().forEach((t) => t.stop());
+  localStream = null;
 }
 
 export function releaseStream(): void {
-  stopCapture();
-  localStream?.getTracks().forEach((t) => t.stop());
-  localStream = null;
+  stopCapture(); // stopCapture now also releases the stream
+}
+
+// Call once on page load to trigger the browser mic-permission dialog early,
+// before the user presses PTT, so the first transmission is never interrupted.
+export async function requestMicPermission(): Promise<void> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices) return;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    s.getTracks().forEach((t) => t.stop());
+  } catch {
+    // Denied or unavailable — PTT will surface the error when pressed
+  }
 }
 
 export function getSupportedMimeType(): string {
