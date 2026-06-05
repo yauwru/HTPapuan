@@ -15,6 +15,7 @@
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
   import { playSquelchOpen } from '$lib/audio/squelch.js';
   import { audioMode } from '$lib/stores/settings.js';
+  import { audioBuffering } from '$lib/audio/relay.js';
   import SignalMeter from '$components/SignalMeter.svelte';
   import MemberList from '$components/MemberList.svelte';
   import PTTButton from '$components/PTTButton.svelte';
@@ -228,7 +229,12 @@
       <p class="lcd text-3xl text-amber-400 tracking-widest mt-1">{$currentFrequency}</p>
       <div class="flex items-center justify-between mt-1">
         <p class="text-xs font-mono text-slate-500">{$members.length} anggota aktif</p>
-        <p class="text-xs font-mono text-slate-600">{$audioMode === 'native' ? 'HP/Tablet' : 'Laptop/PC'}</p>
+        <div class="flex items-center gap-2">
+          {#if $speakerCallsign && $audioBuffering}
+            <span class="text-xs font-mono text-amber-400 animate-pulse">BUFFERING...</span>
+          {/if}
+          <p class="text-xs font-mono text-slate-600">{$audioMode === 'native' ? 'HP/Tablet' : 'Laptop/PC'}</p>
+        </div>
       </div>
     </div>
 

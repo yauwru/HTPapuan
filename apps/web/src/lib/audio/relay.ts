@@ -9,8 +9,11 @@
 //
 // Both modes produce ~32 ms chunks — same jitter tolerance regardless of mode.
 //
-// Playback: chunks scheduled immediately on AudioContext timeline.
+// Playback: chunks pass through a jitter buffer (PREBUFFER_CHUNKS × 32 ms = ~128 ms)
+//           before scheduling, so moderate network jitter does not cause gaps.
 //           Audio routed through a radio bandpass + saturation chain.
+
+import { writable } from 'svelte/store';
 
 const SAMPLE_RATE = 16000;   // target rate for auto/laptop mode
 const CHUNK_MS = 32;         // target chunk duration (ms) for both modes
@@ -137,13 +140,25 @@ export function getSupportedMimeType(): string {
 }
 
 // ── Receiver ─────────────────────────────────────────────
-// Each chunk is scheduled immediately on the AudioContext timeline.
+// Chunks fill a prebuffer before playback starts.  Once the buffer reaches
+// PREBUFFER_CHUNKS the queued audio is scheduled in one burst; subsequent
+// chunks are scheduled immediately.  This absorbs up to
+// (PREBUFFER_CHUNKS × chunk_duration) of network jitter without gaps.
+//
 // Audio routed through a radio bandpass + saturation chain for HT character.
+
+// Number of chunks to buffer before starting playback (~128 ms at 32 ms/chunk)
+const PREBUFFER_CHUNKS = 4;
+
+// Exported store — true while the jitter buffer is filling (visible in UI)
+export const audioBuffering = writable(false);
 
 let rxCtx: AudioContext | null = null;
 let rxChainInput: AudioNode | null = null;
 let nextPlayTime = 0;
 let incomingSampleRate = SAMPLE_RATE;
+let prebuffer: Float32Array[] = [];
+let playbackStarted = false;
 
 function makeDistortionCurve(amount: number): Float32Array {
   const n = 256;
@@ -197,6 +212,24 @@ function getOrCreateRxCtx(): { ctx: AudioContext; input: AudioNode } {
 export function beginReceiving(_mimeType: string, sampleRate?: number): void {
   incomingSampleRate = sampleRate ?? SAMPLE_RATE;
   nextPlayTime = 0;
+  prebuffer = [];
+  playbackStarted = false;
+  audioBuffering.set(true);
+}
+
+function scheduleChunk(f32: Float32Array, ctx: AudioContext, input: AudioNode): void {
+  const now = ctx.currentTime;
+  // Resync if we fell behind by >200 ms (e.g. tab was hidden, or buffer just started)
+  if (nextPlayTime < now - 0.2) nextPlayTime = now + 0.01;
+  const startAt = Math.max(now + 0.01, nextPlayTime);
+  const buf = ctx.createBuffer(1, f32.length, incomingSampleRate);
+  buf.copyToChannel(f32, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(input);
+  src.start(startAt);
+  src.onended = () => src.disconnect();
+  nextPlayTime = startAt + buf.duration;
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
@@ -208,31 +241,43 @@ export function receiveChunk(data: ArrayBuffer): void {
 
   const { ctx, input } = getOrCreateRxCtx();
 
-  const schedule = () => {
-    const now = ctx.currentTime;
-
-    if (nextPlayTime < now - 0.15) nextPlayTime = 0;
-
-    const startAt = Math.max(now + 0.01, nextPlayTime);
-    const buf = ctx.createBuffer(1, f32.length, incomingSampleRate);
-    buf.copyToChannel(f32, 0);
-
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(input);
-    src.start(startAt);
-    src.onended = () => src.disconnect();
-
-    nextPlayTime = startAt + buf.duration;
+  const doSchedule = () => {
+    if (!playbackStarted) {
+      prebuffer.push(f32);
+      if (prebuffer.length >= PREBUFFER_CHUNKS) {
+        // Buffer full — flush and start playing
+        playbackStarted = true;
+        audioBuffering.set(false);
+        for (const chunk of prebuffer) scheduleChunk(chunk, ctx, input);
+        prebuffer = [];
+      }
+      // else: still filling the prebuffer
+    } else {
+      // Already playing — schedule this chunk immediately
+      scheduleChunk(f32, ctx, input);
+    }
   };
 
   if (ctx.state === 'suspended') {
-    ctx.resume().then(schedule).catch(console.error);
+    ctx.resume().then(doSchedule).catch(console.error);
   } else {
-    schedule();
+    doSchedule();
   }
 }
 
 export function playReceived(): void {
+  // Transmission ended — flush any remaining prebuffer chunks
+  if (prebuffer.length > 0) {
+    const { ctx, input } = getOrCreateRxCtx();
+    const flush = () => {
+      for (const chunk of prebuffer) scheduleChunk(chunk, ctx, input);
+      prebuffer = [];
+    };
+    if (ctx.state === 'suspended') ctx.resume().then(flush).catch(console.error);
+    else flush();
+  }
+  prebuffer = [];
+  playbackStarted = false;
+  audioBuffering.set(false);
   nextPlayTime = 0;
 }
