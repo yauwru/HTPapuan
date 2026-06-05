@@ -1,22 +1,24 @@
 // WebSocket binary audio relay — raw PCM Int16
 //
-// Two capture modes controlled by the `native` parameter:
-//   native = false  (default / Laptop-PC)
-//     AudioContext requested at 16 kHz; AudioWorklet resamples if device runs at a
-//     higher rate. Bandwidth: ~32 KB/s. May have rare issues on some mobile browsers.
-//   native = true   (HP/Tablet mode)
-//     AudioContext at device native rate (no sampleRate constraint). AudioWorklet does
-//     NOT resample — just int16 conversion. Bandwidth: ~96 KB/s at 48 kHz. Most reliable.
+// Two capture modes:
+//   native = false  (Laptop/PC): AudioContext @ 16 kHz, AudioWorklet resamples if needed.
+//                                Chunk: 512 samples = 32 ms. Bandwidth: ~32 KB/s.
+//   native = true   (HP/Tablet): AudioContext @ device native rate, no resampling.
+//                                Chunk: ~32 ms worth of samples at native rate (1536 @ 48 kHz).
+//                                Bandwidth: ~96 KB/s. Most reliable on iOS/Android.
+//
+// Both modes produce ~32 ms chunks — same jitter tolerance regardless of mode.
 //
 // Playback: chunks scheduled immediately on AudioContext timeline.
-// Audio routed through a radio bandpass + saturation chain.
+//           Audio routed through a radio bandpass + saturation chain.
 
-const SAMPLE_RATE = 16000;  // target rate for auto/laptop mode
-const WORKLET_CHUNK = 512;  // samples per chunk (both modes)
-const FALLBACK_BUF = 1024;  // ScriptProcessor input buffer
+const SAMPLE_RATE = 16000;   // target rate for auto/laptop mode
+const CHUNK_MS = 32;         // target chunk duration (ms) for both modes
+const FALLBACK_BUF = 1024;
 
 // ── Sender ──────────────────────────────────────────────
 let localStream: MediaStream | null = null;
+let localStreamNative = false;   // which mode was the stream created for
 let txCtx: AudioContext | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let captureNode: AudioWorkletNode | ScriptProcessorNode | null = null;
@@ -26,33 +28,45 @@ export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
   native = false,
 ): Promise<number> {
-  if (!localStream) {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-        sampleRate: native ? undefined : SAMPLE_RATE,
-      },
-      video: false,
-    });
+  // Release stream if mode changed — different constraint applies
+  if (localStream && localStreamNative !== native) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
   }
 
-  // Always create a fresh AudioContext per PTT press to avoid worklet state
-  // issues on mobile (module already loaded → processor not re-initialized).
+  if (!localStream) {
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+    };
+    if (!native) audioConstraints.sampleRate = SAMPLE_RATE;
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: audioConstraints,
+      video: false,
+    });
+    localStreamNative = native;
+  }
+
+  // Fresh AudioContext per PTT press to avoid worklet re-init issues on mobile
   txCtx = native
-    ? new AudioContext()                              // native: let browser pick its preferred rate
-    : new AudioContext({ sampleRate: SAMPLE_RATE });  // auto: request 16 kHz
+    ? new AudioContext()
+    : new AudioContext({ sampleRate: SAMPLE_RATE });
 
   if (txCtx.state === 'suspended') await txCtx.resume();
 
-  // targetRate tells the worklet whether to resample:
-  //   SAMPLE_RATE → resample to 16 kHz (auto mode)
-  //   0           → no resample, output at native sampleRate (native mode)
+  const nativeRate = txCtx.sampleRate;
+  // Chunk size: always target CHUNK_MS ms worth of output samples
+  // auto: 512 @ 16 kHz = 32 ms   native: 1536 @ 48 kHz = 32 ms
+  const chunkOut = native
+    ? Math.round((CHUNK_MS / 1000) * nativeRate)
+    : Math.round((CHUNK_MS / 1000) * SAMPLE_RATE);
+  // targetRate = 0 → no resample (native); SAMPLE_RATE → resample to 16 kHz
   const targetRate = native ? 0 : SAMPLE_RATE;
-  // Actual transmitted PCM sample rate
-  const txRate = native ? txCtx.sampleRate : SAMPLE_RATE;
+  // Actual transmitted PCM rate
+  const txRate = native ? nativeRate : SAMPLE_RATE;
 
   sourceNode = txCtx.createMediaStreamSource(localStream);
   silentOut = txCtx.createGain();
@@ -62,7 +76,7 @@ export async function startCapture(
   try {
     await txCtx.audioWorklet.addModule('/audio-capture-processor.js');
     const wn = new AudioWorkletNode(txCtx, 'audio-capture-processor', {
-      processorOptions: { chunkSize: WORKLET_CHUNK, targetRate },
+      processorOptions: { chunkSize: chunkOut, targetRate },
     });
     wn.port.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) onChunk(e.data);
@@ -70,11 +84,12 @@ export async function startCapture(
     captureNode = wn;
     usingWorklet = true;
   } catch {
-    // Fallback: ScriptProcessorNode with correct rate detection
+    // Fallback: ScriptProcessorNode with correct rate from track settings
     const track = localStream.getAudioTracks()[0];
-    const nativeRate = track?.getSettings().sampleRate ?? txCtx.sampleRate;
-    const ratio = native ? 1 : (nativeRate / SAMPLE_RATE);
-    const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
+    const hwRate = track?.getSettings().sampleRate ?? nativeRate;
+    const ratio = native ? 1 : (hwRate / SAMPLE_RATE);
+    const spBuf = Math.max(256, Math.pow(2, Math.round(Math.log2((CHUNK_MS / 1000) * hwRate))));
+    const sp = txCtx.createScriptProcessor(spBuf, 1, 1);
     sp.onaudioprocess = (e) => {
       const f32 = e.inputBuffer.getChannelData(0);
       const outLen = Math.floor(f32.length / ratio);
@@ -96,7 +111,7 @@ export async function startCapture(
   captureNode.connect(silentOut);
   silentOut.connect(txCtx.destination);
 
-  console.log(`[relay] TX ${native ? 'native' : 'auto'} mode via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate}Hz → ${txRate}Hz`);
+  console.log(`[relay] TX ${native ? 'native' : 'auto'} via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${nativeRate}Hz, chunk=${chunkOut}smp=${CHUNK_MS}ms → ${txRate}Hz`);
   return txRate;
 }
 
@@ -108,6 +123,7 @@ export function stopCapture(): void {
   captureNode = sourceNode = silentOut = null;
   txCtx?.close();
   txCtx = null;
+  // Stream is kept alive between PTT presses (same mode reuses mic without re-prompting)
 }
 
 export function releaseStream(): void {
