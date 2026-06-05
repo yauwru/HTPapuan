@@ -1,14 +1,19 @@
-// WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
+// WebSocket binary audio relay — raw PCM Int16
 //
-// Capture: fresh AudioContext per transmission prevents worklet state issues on mobile.
-//          AudioWorklet resamples from device native rate → 16 kHz.
-//          ScriptProcessorNode fallback also resamples to 16 kHz.
+// Two capture modes controlled by the `native` parameter:
+//   native = false  (default / Laptop-PC)
+//     AudioContext requested at 16 kHz; AudioWorklet resamples if device runs at a
+//     higher rate. Bandwidth: ~32 KB/s. May have rare issues on some mobile browsers.
+//   native = true   (HP/Tablet mode)
+//     AudioContext at device native rate (no sampleRate constraint). AudioWorklet does
+//     NOT resample — just int16 conversion. Bandwidth: ~96 KB/s at 48 kHz. Most reliable.
+//
 // Playback: chunks scheduled immediately on AudioContext timeline.
-//           Audio routed through a radio bandpass + saturation chain.
+// Audio routed through a radio bandpass + saturation chain.
 
-const SAMPLE_RATE = 16000;
-const WORKLET_CHUNK = 512;  // output samples @ 16 kHz = 32 ms per chunk
-const FALLBACK_BUF = 1024;  // ScriptProcessor input buffer size
+const SAMPLE_RATE = 16000;  // target rate for auto/laptop mode
+const WORKLET_CHUNK = 512;  // samples per chunk (both modes)
+const FALLBACK_BUF = 1024;  // ScriptProcessor input buffer
 
 // ── Sender ──────────────────────────────────────────────
 let localStream: MediaStream | null = null;
@@ -19,6 +24,7 @@ let silentOut: GainNode | null = null;
 
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
+  native = false,
 ): Promise<number> {
   if (!localStream) {
     localStream = await navigator.mediaDevices.getUserMedia({
@@ -27,18 +33,26 @@ export async function startCapture(
         noiseSuppression: true,
         autoGainControl: true,
         channelCount: 1,
-        sampleRate: SAMPLE_RATE,
+        sampleRate: native ? undefined : SAMPLE_RATE,
       },
       video: false,
     });
   }
 
-  // Always create a fresh AudioContext per PTT press.
-  // Reusing a context across transmissions causes AudioWorklet to misbehave on
-  // some mobile browsers (addModule no-ops, processor not re-initialized),
-  // which silently falls back to ScriptProcessor with wrong sample-rate ratio.
-  txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  // Always create a fresh AudioContext per PTT press to avoid worklet state
+  // issues on mobile (module already loaded → processor not re-initialized).
+  txCtx = native
+    ? new AudioContext()                              // native: let browser pick its preferred rate
+    : new AudioContext({ sampleRate: SAMPLE_RATE });  // auto: request 16 kHz
+
   if (txCtx.state === 'suspended') await txCtx.resume();
+
+  // targetRate tells the worklet whether to resample:
+  //   SAMPLE_RATE → resample to 16 kHz (auto mode)
+  //   0           → no resample, output at native sampleRate (native mode)
+  const targetRate = native ? 0 : SAMPLE_RATE;
+  // Actual transmitted PCM sample rate
+  const txRate = native ? txCtx.sampleRate : SAMPLE_RATE;
 
   sourceNode = txCtx.createMediaStreamSource(localStream);
   silentOut = txCtx.createGain();
@@ -48,22 +62,18 @@ export async function startCapture(
   try {
     await txCtx.audioWorklet.addModule('/audio-capture-processor.js');
     const wn = new AudioWorkletNode(txCtx, 'audio-capture-processor', {
-      processorOptions: { chunkSize: WORKLET_CHUNK },
+      processorOptions: { chunkSize: WORKLET_CHUNK, targetRate },
     });
     wn.port.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) {
-        onChunk(e.data);
-      }
+      if (e.data instanceof ArrayBuffer) onChunk(e.data);
     };
     captureNode = wn;
     usingWorklet = true;
   } catch {
-    // Fallback: ScriptProcessorNode with manual resampling to 16 kHz.
-    // Use MediaStreamTrack.getSettings() for the true hardware sample rate —
-    // txCtx.sampleRate may report 16000 even when hardware runs at 48000.
+    // Fallback: ScriptProcessorNode with correct rate detection
     const track = localStream.getAudioTracks()[0];
     const nativeRate = track?.getSettings().sampleRate ?? txCtx.sampleRate;
-    const ratio = nativeRate / SAMPLE_RATE;
+    const ratio = native ? 1 : (nativeRate / SAMPLE_RATE);
     const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
     sp.onaudioprocess = (e) => {
       const f32 = e.inputBuffer.getChannelData(0);
@@ -86,8 +96,8 @@ export async function startCapture(
   captureNode.connect(silentOut);
   silentOut.connect(txCtx.destination);
 
-  console.log(`[relay] TX via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate}Hz → ${SAMPLE_RATE}Hz`);
-  return SAMPLE_RATE;
+  console.log(`[relay] TX ${native ? 'native' : 'auto'} mode via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate}Hz → ${txRate}Hz`);
+  return txRate;
 }
 
 export function stopCapture(): void {
@@ -96,7 +106,6 @@ export function stopCapture(): void {
   silentOut?.disconnect();
   if (captureNode instanceof AudioWorkletNode) captureNode.port.close();
   captureNode = sourceNode = silentOut = null;
-  // Close the context — a fresh one is created on the next startCapture call
   txCtx?.close();
   txCtx = null;
 }
@@ -112,9 +121,8 @@ export function getSupportedMimeType(): string {
 }
 
 // ── Receiver ─────────────────────────────────────────────
-// Each incoming chunk is scheduled on the AudioContext timeline immediately.
-// Audio passes through a radio processing chain: bandpass (300–3400 Hz) + soft
-// saturation + compression — gives the classic HT / CB radio character.
+// Each chunk is scheduled immediately on the AudioContext timeline.
+// Audio routed through a radio bandpass + saturation chain for HT character.
 
 let rxCtx: AudioContext | null = null;
 let rxChainInput: AudioNode | null = null;
@@ -135,7 +143,6 @@ function getOrCreateRxCtx(): { ctx: AudioContext; input: AudioNode } {
   if (!rxCtx || rxCtx.state === 'closed') {
     rxCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
-    // Bandpass: telephone/radio range 300–3400 Hz
     const hp = rxCtx.createBiquadFilter();
     hp.type = 'highpass';
     hp.frequency.value = 300;
@@ -146,16 +153,13 @@ function getOrCreateRxCtx(): { ctx: AudioContext; input: AudioNode } {
     lp.frequency.value = 3400;
     lp.Q.value = 0.9;
 
-    // Soft saturation — adds the characteristic "crunch" of analogue radio
     const ws = rxCtx.createWaveShaper();
     ws.curve = makeDistortionCurve(40);
     ws.oversample = '2x';
 
-    // Compensate for gain reduction from bandpass + clipper
     const gain = rxCtx.createGain();
     gain.gain.value = 2.2;
 
-    // Light compression to keep volume consistent
     const comp = rxCtx.createDynamicsCompressor();
     comp.threshold.value = -18;
     comp.knee.value = 8;
@@ -191,7 +195,6 @@ export function receiveChunk(data: ArrayBuffer): void {
   const schedule = () => {
     const now = ctx.currentTime;
 
-    // Resync if we fell behind by >150 ms (tab hidden, etc.)
     if (nextPlayTime < now - 0.15) nextPlayTime = 0;
 
     const startAt = Math.max(now + 0.01, nextPlayTime);
