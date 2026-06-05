@@ -11,6 +11,7 @@ import {
   busyCallsign,
   networkRtt,
   addTextMessage,
+  visitLog,
 } from './stores/channel.js';
 import type { ClientMessage, ServerMessage } from '@starry-glade/protocol';
 
@@ -98,7 +99,7 @@ function _connect(): void {
       case 'joined':
         sessionId.set(msg.sessionId);
         members.set(msg.members);
-        // Update TURN credentials now that we have them from the server
+        visitLog.set(msg.visitLog ?? []);
         import('./webrtc.js').then(({ initWebRTC }) => {
           initWebRTC(msg.turnCredentials);
         });
@@ -150,6 +151,10 @@ function _connect(): void {
       case 'text_broadcast':
         addTextMessage({ callsign: msg.callsign, text: msg.text, timestamp: msg.timestamp });
         import('./audio/squelch.js').then(({ playTextBeep }) => playTextBeep());
+        break;
+
+      case 'visit_log':
+        visitLog.set(msg.entries);
         break;
 
       case 'offer':
@@ -209,4 +214,5 @@ export function leaveChannel(): void {
   members.set([]);
   speakerCallsign.set(null);
   pttState.set('idle');
+  visitLog.set([]);
 }

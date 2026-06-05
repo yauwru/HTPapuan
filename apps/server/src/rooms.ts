@@ -1,18 +1,19 @@
-import type { Member } from '@starry-glade/protocol';
+import type { Member, VisitLogEntry } from '@starry-glade/protocol';
 
 export interface Session {
   id: string;
   callsign: string;
   frequency: string | null;
-  ws: unknown; // uWebSockets WebSocket handle
+  ws: unknown;
 }
 
 export interface Room {
   frequency: string;
   members: Map<string, Session>;
-  pttHolder: string | null; // sessionId holding PTT lock
+  pttHolder: string | null;
   pttCallsign: string | null;
   lastActivity: number;
+  visitLog: VisitLogEntry[];
 }
 
 const rooms = new Map<string, Room>();
@@ -26,6 +27,7 @@ export function getOrCreateRoom(frequency: string): Room {
       pttHolder: null,
       pttCallsign: null,
       lastActivity: Date.now(),
+      visitLog: [],
     });
   }
   return rooms.get(frequency)!;
@@ -52,6 +54,12 @@ export function joinRoom(session: Session, frequency: string, callsign: string):
   const room = getOrCreateRoom(frequency);
   room.members.set(session.id, session);
   room.lastActivity = Date.now();
+
+  // Remove any stale entry for this session, then append fresh entry
+  room.visitLog = room.visitLog.filter((e) => e.sessionId !== session.id);
+  room.visitLog.push({ callsign, sessionId: session.id, joinedAt: Date.now(), leftAt: null });
+  if (room.visitLog.length > 200) room.visitLog = room.visitLog.slice(-200);
+
   return room;
 }
 
@@ -62,6 +70,11 @@ export function leaveRoom(session: Session): Room | null {
   if (!room) return null;
 
   room.members.delete(session.id);
+  room.lastActivity = Date.now();
+
+  // Mark departure time in the log
+  const entry = room.visitLog.find((e) => e.sessionId === session.id && e.leftAt === null);
+  if (entry) entry.leftAt = Date.now();
 
   // Release PTT lock if this session held it
   if (room.pttHolder === session.id) {
@@ -69,11 +82,7 @@ export function leaveRoom(session: Session): Room | null {
     room.pttCallsign = null;
   }
 
-  // Clean up empty rooms
-  if (room.members.size === 0) {
-    rooms.delete(session.frequency);
-  }
-
+  // Keep the room alive so the visit log persists — stale cleanup handles removal
   session.frequency = null;
   return room;
 }
@@ -84,7 +93,7 @@ export function removeSession(id: string): void {
 
 export function acquirePTT(room: Room, session: Session): boolean {
   if (room.pttHolder !== null && room.pttHolder !== session.id) {
-    return false; // Channel busy
+    return false;
   }
   room.pttHolder = session.id;
   room.pttCallsign = session.callsign;
@@ -107,12 +116,12 @@ export function getRoomMembers(room: Room): Member[] {
   }));
 }
 
-// Cleanup stale rooms every 10 minutes
+// Cleanup stale rooms after 24 hours of no activity
 setInterval(() => {
   const now = Date.now();
   for (const [freq, room] of rooms) {
-    if (room.members.size === 0 && now - room.lastActivity > 10 * 60 * 1000) {
+    if (now - room.lastActivity > 24 * 60 * 60 * 1000) {
       rooms.delete(freq);
     }
   }
-}, 10 * 60 * 1000);
+}, 60 * 60 * 1000);

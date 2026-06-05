@@ -4,6 +4,13 @@ export interface Member {
   joinedAt: number;
 }
 
+export interface VisitLogEntry {
+  callsign: string;
+  sessionId: string;
+  joinedAt: number;
+  leftAt: number | null;
+}
+
 export interface TurnCredentials {
   urls: string[];
   username: string;
@@ -26,7 +33,7 @@ export type ClientMessage =
 
 // Server → Client
 export type ServerMessage =
-  | { type: 'joined'; sessionId: string; members: Member[]; turnCredentials: TurnCredentials | null }
+  | { type: 'joined'; sessionId: string; members: Member[]; turnCredentials: TurnCredentials | null; visitLog: VisitLogEntry[] }
   | { type: 'member_joined'; member: Member }
   | { type: 'member_left'; callsign: string; sessionId: string }
   | { type: 'speaker_start'; callsign: string; sessionId: string; mimeType?: string; sampleRate?: number }
@@ -37,5 +44,7 @@ export type ServerMessage =
   | { type: 'ice_candidate'; from: string; candidate: RTCIceCandidateInit }
   | { type: 'text_broadcast'; callsign: string; text: string; timestamp: number }
   | { type: 'roger'; callsign: string }
+  | { type: 'visit_log'; entries: VisitLogEntry[] }
   | { type: 'error'; code: string; message: string }
   | { type: 'ping' };
+

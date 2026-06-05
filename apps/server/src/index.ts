@@ -93,6 +93,7 @@ app.ws<UserData>('/*', {
           sessionId,
           members: getRoomMembers(room),
           turnCredentials,
+          visitLog: room.visitLog,
         });
 
         broadcast(room.members.values(), {
@@ -100,18 +101,28 @@ app.ws<UserData>('/*', {
           member: { callsign: sign, sessionId, joinedAt: Date.now() },
         }, sessionId);
 
+        broadcast(room.members.values(), {
+          type: 'visit_log',
+          entries: room.visitLog,
+        });
+
         console.log(`[>] ${sign} joined ${freq} (${room.members.size} members)`);
         break;
       }
 
       case 'leave': {
-        const room = session.frequency ? getRoom(session.frequency) : null;
+        const freq = session.frequency;
+        const room = freq ? getRoom(freq) : null;
         leaveRoom(session);
         if (room) {
           broadcast(room.members.values(), {
             type: 'member_left',
             callsign: session.callsign,
             sessionId,
+          });
+          broadcast(room.members.values(), {
+            type: 'visit_log',
+            entries: room.visitLog,
           });
         }
         break;
@@ -222,6 +233,10 @@ app.ws<UserData>('/*', {
         type: 'member_left',
         callsign,
         sessionId,
+      });
+      broadcast(room.members.values(), {
+        type: 'visit_log',
+        entries: room.visitLog,
       });
     }
 

@@ -10,6 +10,7 @@
     speakerCallsign,
     pttState,
     textMessages,
+    visitLog,
   } from '$lib/stores/channel.js';
   import { connect, disconnect, joinChannel, leaveChannel } from '$lib/wsClient.js';
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
@@ -106,6 +107,20 @@
       sendText();
     }
   }
+
+  function formatTs(ms: number): string {
+    const d = new Date(ms);
+    return `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')}Z`;
+  }
+
+  // Only show entries from today (UTC)
+  $: todayLog = $visitLog.filter((e) => {
+    const now = new Date();
+    const t = new Date(e.joinedAt);
+    return t.getUTCFullYear() === now.getUTCFullYear() &&
+           t.getUTCMonth() === now.getUTCMonth() &&
+           t.getUTCDate() === now.getUTCDate();
+  });
 </script>
 
 <svelte:head>
@@ -229,6 +244,24 @@
     <div class="w-full">
       <MemberList />
     </div>
+
+    <!-- Visit log -->
+    {#if todayLog.length > 0}
+      <div class="w-full bg-space-800 border border-slate-700/30 rounded-xl p-3">
+        <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">Log Hari Ini</p>
+        <div class="max-h-36 overflow-y-auto space-y-1">
+          {#each [...todayLog].reverse() as entry (entry.sessionId + entry.joinedAt)}
+            <div class="grid font-mono text-xs" style="grid-template-columns: 1fr auto auto">
+              <span class="text-slate-300 truncate pr-2">{entry.callsign}</span>
+              <span class="text-slate-500 tabular-nums">{formatTs(entry.joinedAt)}</span>
+              <span class="pl-2 tabular-nums {entry.leftAt ? 'text-slate-600' : 'text-mint'}">
+                {entry.leftAt ? formatTs(entry.leftAt) : '• ONLINE'}
+              </span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- PTT Button (center of screen) -->
     <div class="w-full flex justify-center py-4">
