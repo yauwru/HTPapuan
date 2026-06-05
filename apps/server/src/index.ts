@@ -235,7 +235,7 @@ app.get('/health', (res) => {
 
 app.listen(PORT, (token) => {
   if (token) {
-    console.log(`Starry Glade Radio server listening on port ${PORT}`);
+    console.log(`PVA.HT server listening on port ${PORT}`);
   } else {
     console.error(`Failed to listen on port ${PORT}`);
     process.exit(1);

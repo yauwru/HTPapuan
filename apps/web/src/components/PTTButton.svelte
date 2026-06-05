@@ -1,7 +1,26 @@
 <script lang="ts">
   import { pttState, isInChannel, busyCallsign, speakerCallsign } from '$lib/stores/channel.js';
   import { onPTTDown, onPTTUp, onPTTCancel } from '$lib/ptt.js';
+  import { pttKey, savePttKey, pttKeyLabel } from '$lib/stores/pttKey.js';
   import Waveform from './Waveform.svelte';
+
+  let assigningKey = false;
+
+  function startKeyAssign() {
+    assigningKey = true;
+  }
+
+  function captureKey(e: KeyboardEvent) {
+    if (!assigningKey) return;
+    e.preventDefault();
+    if (e.key === 'Escape') {
+      assigningKey = false;
+      return;
+    }
+    savePttKey(e.key);
+    assigningKey = false;
+    (e.target as HTMLInputElement)?.blur();
+  }
 
   $: isTransmitting = $pttState === 'transmitting';
   $: isBusy = $pttState === 'busy';
@@ -79,5 +98,30 @@
     <p class="text-slate-600 text-xs font-mono text-center">
       Tahan tombol untuk bicara
     </p>
+
+    <!-- Keyboard shortcut assignment (desktop only) -->
+    <div class="hidden sm:flex items-center gap-2">
+      <span class="text-slate-700 text-xs font-mono">Key:</span>
+      {#if assigningKey}
+        <!-- Hidden input that captures the next keydown -->
+        <input
+          type="text"
+          readonly
+          placeholder="tekan tombol..."
+          autofocus
+          on:keydown={captureKey}
+          on:blur={() => (assigningKey = false)}
+          class="w-28 text-center text-xs font-mono bg-space-800 border border-amber-400/50 text-amber-400 rounded px-2 py-0.5 outline-none placeholder-amber-400/60 animate-pulse"
+        />
+      {:else}
+        <button
+          class="text-slate-500 text-xs font-mono border border-slate-700 px-1.5 py-0.5 rounded hover:border-mint/50 hover:text-mint transition-colors"
+          on:click={startKeyAssign}
+          title="Klik untuk ganti tombol PTT"
+        >
+          {pttKeyLabel($pttKey)}
+        </button>
+      {/if}
+    </div>
   {/if}
 </div>

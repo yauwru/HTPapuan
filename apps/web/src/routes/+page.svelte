@@ -15,6 +15,7 @@
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
   import { playSquelchOpen } from '$lib/audio/squelch.js';
   import { audioBuffering } from '$lib/audio/relay.js';
+  import { initPttKey } from '$lib/stores/pttKey.js';
   import SignalMeter from '$components/SignalMeter.svelte';
   import MemberList from '$components/MemberList.svelte';
   import PTTButton from '$components/PTTButton.svelte';
@@ -23,16 +24,36 @@
   let callsignInput = '';
   let textInput = '';
   let joinError = '';
+  let utcClock = '';
+  let clockTimer: ReturnType<typeof setInterval>;
 
-  // Persist callsign across sessions
+  function updateClock() {
+    const n = new Date();
+    utcClock = `${String(n.getUTCHours()).padStart(2,'0')}:${String(n.getUTCMinutes()).padStart(2,'0')}:${String(n.getUTCSeconds()).padStart(2,'0')}Z`;
+  }
+
+  function formatFreq(raw: string): string {
+    const digits = raw.replace(/\D/g, '').slice(0, 6);
+    if (digits.length <= 3) return digits;
+    return digits.slice(0, 3) + '.' + digits.slice(3);
+  }
+
+  function handleFreqInput(e: Event): void {
+    freqInput = formatFreq((e.target as HTMLInputElement).value);
+  }
+
   onMount(() => {
     callsignInput = localStorage.getItem('callsign') ?? '';
-    freqInput = localStorage.getItem('lastFrequency') ?? '';
-    initWebRTC(null); // Setup WebRTC signaling handlers early
+    freqInput = formatFreq(localStorage.getItem('lastFrequency') ?? '');
+    initPttKey();
+    initWebRTC(null);
     connect();
+    updateClock();
+    clockTimer = setInterval(updateClock, 1000);
   });
 
   onDestroy(() => {
+    clearInterval(clockTimer);
     cleanupWebRTC();
     disconnect();
   });
@@ -49,10 +70,10 @@
   async function handleJoin(): Promise<void> {
     joinError = '';
 
-    const freq = freqInput.replace(/[^A-Z0-9._\-]/gi, '').toUpperCase().trim();
+    const freq = freqInput.replace(/[^0-9.]/g, '').trim();
     const callsign = callsignInput.replace(/[^A-Z0-9\-_ ]/gi, '').trim().toUpperCase();
 
-    if (!freq) { joinError = 'Masukkan kode frekuensi'; return; }
+    if (!freq) { joinError = 'Masukkan frekuensi'; return; }
     if (!callsign) { joinError = 'Masukkan callsign / nama panggilanmu'; return; }
     if (callsign.length < 2) { joinError = 'Callsign minimal 2 karakter'; return; }
 
@@ -88,17 +109,20 @@
 </script>
 
 <svelte:head>
-  <title>Starry Glade Radio</title>
+  <title>PVA.HT</title>
 </svelte:head>
 
 <div class="relative z-10 min-h-screen flex flex-col items-center justify-start px-4 py-6 gap-6 max-w-md mx-auto">
   <!-- Header -->
   <header class="w-full flex items-center justify-between">
     <div>
-      <h1 class="font-mono text-lg text-slate-200 tracking-widest">✦ STARRY GLADE</h1>
-      <p class="font-mono text-xs text-slate-500 tracking-widest">RADIO</p>
+      <h1 class="font-mono text-lg text-slate-200 tracking-widest">✦ PVA.HT</h1>
+      <p class="font-mono text-xs text-slate-500 tracking-widest">PAPUA VIRTUAL AVIATION</p>
     </div>
-    <SignalMeter />
+    <div class="flex flex-col items-end gap-1">
+      <span class="font-mono text-xs text-amber-400 tracking-widest tabular-nums">{utcClock}</span>
+      <SignalMeter />
+    </div>
   </header>
 
   {#if !$isInChannel}
@@ -108,18 +132,19 @@
       <!-- Frequency display -->
       <div class="bg-space-800 border border-slate-700/50 rounded-2xl p-5">
         <label for="freq-input" class="block text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">
-          Kode Frekuensi
+          Frekuensi
         </label>
         <input
           id="freq-input"
-          bind:value={freqInput}
+          value={freqInput}
+          on:input={handleFreqInput}
           type="text"
-          inputmode="text"
-          maxlength="12"
-          placeholder="contoh: 147300"
+          inputmode="numeric"
+          maxlength="7"
+          placeholder="118.575"
           autocomplete="off"
           autocorrect="off"
-          autocapitalize="characters"
+          autocapitalize="off"
           spellcheck="false"
           class="
             lcd w-full bg-transparent text-3xl text-amber-400 placeholder-slate-700
@@ -129,7 +154,7 @@
         />
         <div class="mt-2 h-px bg-amber-400/30"></div>
         <p class="mt-2 text-xs text-slate-600 font-mono">
-          Sepakati kode yang sama dengan teman-temanmu
+          Masukkan frekuensi ATC, contoh: 118.575
         </p>
       </div>
 
@@ -253,6 +278,6 @@
 
   <!-- Footer -->
   <footer class="mt-auto pt-4 text-center">
-    <p class="text-slate-700 text-xs font-mono">Starry Glade Radio · v0.1.0</p>
+    <p class="text-slate-700 text-xs font-mono">PVA.HT · Papua Virtual Aviation</p>
   </footer>
 </div>

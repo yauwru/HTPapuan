@@ -123,19 +123,20 @@ let nextPlayTime = 0;
 let incomingSampleRate = SAMPLE_RATE;
 let prebuffer: Float32Array[] = [];
 let playbackStarted = false;
-// Track tab visibility — discard chunks while hidden to prevent burst on return
-let tabHidden = false;
-
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    tabHidden = document.hidden;
-    if (document.hidden) {
-      // Reset receive state — stale audio must not burst-play when returning
+    if (!document.hidden && rxCtx && rxCtx.state === 'suspended') {
+      // AudioContext was suspended while in background (iOS Safari etc.) —
+      // close it so next chunk recreates fresh without a stale burst.
+      rxCtx.close().catch(() => {});
+      rxCtx = null;
+      rxChainInput = null;
       prebuffer = [];
       playbackStarted = false;
       nextPlayTime = 0;
       audioBuffering.set(false);
     }
+    // When going to background: do nothing — let audio keep playing.
   });
 }
 
@@ -211,9 +212,6 @@ function scheduleChunk(f32: Float32Array, ctx: AudioContext, input: AudioNode): 
 }
 
 export function receiveChunk(data: ArrayBuffer): void {
-  // Discard while tab is hidden — prevents stale burst on return
-  if (tabHidden) return;
-
   const i16 = new Int16Array(data);
   const f32 = new Float32Array(i16.length);
   for (let i = 0; i < i16.length; i++) {

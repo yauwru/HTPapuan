@@ -3,10 +3,11 @@ import { pttState, isInChannel } from './stores/channel.js';
 import { send, sendBinary } from './wsClient.js';
 import { resumeAudio, playSquelchClose, playBusyTone } from './audio/squelch.js';
 import { startCapture, stopCapture } from './audio/relay.js';
+import { pttKey } from './stores/pttKey.js';
 
 let isHolding = false;
 
-export async function onPTTDown(event: PointerEvent): Promise<void> {
+export async function onPTTDown(event: Event): Promise<void> {
   event.preventDefault();
 
   if (!get(isInChannel)) return;
@@ -56,9 +57,26 @@ export function onChannelBusy(): void {
   // pttState is set to 'busy' by wsClient, then reset after 2s
 }
 
-// Ensure PTT is released on page hide (screen off, tab switch, etc.)
 if (typeof document !== 'undefined') {
+  // Release PTT on page hide (screen off, tab switch, etc.)
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) onPTTUp();
+  });
+
+  // Keyboard PTT shortcut
+  document.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === get(pttKey)) {
+      e.preventDefault();
+      onPTTDown(e);
+    }
+  });
+
+  document.addEventListener('keyup', (e) => {
+    if (e.key === get(pttKey)) {
+      onPTTUp();
+    }
   });
 }
