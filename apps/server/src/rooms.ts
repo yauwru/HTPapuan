@@ -1,8 +1,9 @@
-import type { Member, VisitLogEntry } from '@starry-glade/protocol';
+import type { Member, VisitLogEntry, UserRole } from '@starry-glade/protocol';
 
 export interface Session {
   id: string;
   callsign: string;
+  role: UserRole;
   frequency: string | null;
   ws: unknown;
 }
@@ -38,7 +39,7 @@ export function getRoom(frequency: string): Room | undefined {
 }
 
 export function createSession(id: string, ws: unknown): Session {
-  const session: Session = { id, callsign: '', frequency: null, ws };
+  const session: Session = { id, callsign: '', role: 'pilot', frequency: null, ws };
   sessions.set(id, session);
   return session;
 }
@@ -47,8 +48,9 @@ export function getSession(id: string): Session | undefined {
   return sessions.get(id);
 }
 
-export function joinRoom(session: Session, frequency: string, callsign: string): Room {
+export function joinRoom(session: Session, frequency: string, callsign: string, role: UserRole): Room {
   session.callsign = callsign;
+  session.role = role;
   session.frequency = frequency;
 
   const room = getOrCreateRoom(frequency);
@@ -57,7 +59,7 @@ export function joinRoom(session: Session, frequency: string, callsign: string):
 
   // Remove any stale entry for this session, then append fresh entry
   room.visitLog = room.visitLog.filter((e) => e.sessionId !== session.id);
-  room.visitLog.push({ callsign, sessionId: session.id, joinedAt: Date.now(), leftAt: null });
+  room.visitLog.push({ callsign, sessionId: session.id, joinedAt: Date.now(), leftAt: null, role });
   if (room.visitLog.length > 200) room.visitLog = room.visitLog.slice(-200);
 
   return room;
@@ -113,6 +115,7 @@ export function getRoomMembers(room: Room): Member[] {
     callsign: s.callsign,
     sessionId: s.id,
     joinedAt: Date.now(),
+    role: s.role,
   }));
 }
 

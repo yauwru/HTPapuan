@@ -20,6 +20,14 @@
           class:bg-green-500={!isSpeaking}
         ></div>
 
+        <!-- Role badge -->
+        <span class="font-mono text-xs px-1 py-0.5 rounded leading-none flex-shrink-0
+          {member.role === 'atc'
+            ? 'bg-amber-400/15 text-amber-400 border border-amber-400/30'
+            : 'bg-sky-400/10 text-sky-400 border border-sky-400/20'}">
+          {member.role === 'atc' ? 'ATC' : 'PIL'}
+        </span>
+
         <!-- Callsign -->
         <span
           class="font-mono text-sm tracking-wide transition-colors duration-200"

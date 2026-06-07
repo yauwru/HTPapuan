@@ -4,6 +4,7 @@ import {
   sessionId,
   currentFrequency,
   currentCallsign,
+  currentRole,
   members,
   pttState,
   speakerCallsign,
@@ -63,8 +64,9 @@ function _connect(): void {
     // Rejoin if we were in a channel
     const freq = get(currentFrequency);
     const callsign = get(currentCallsign);
+    const role = get(currentRole);
     if (freq && callsign) {
-      send({ type: 'join', frequency: freq, callsign });
+      send({ type: 'join', frequency: freq, callsign, role });
     }
 
     // Keep-alive ping every 25s to prevent NAT timeout
@@ -202,10 +204,11 @@ export function disconnect(): void {
   connectionState.set('idle');
 }
 
-export function joinChannel(frequency: string, callsign: string): void {
+export function joinChannel(frequency: string, callsign: string, role: 'pilot' | 'atc'): void {
   currentFrequency.set(frequency);
   currentCallsign.set(callsign);
-  send({ type: 'join', frequency, callsign });
+  currentRole.set(role);
+  send({ type: 'join', frequency, callsign, role });
 }
 
 export function leaveChannel(): void {

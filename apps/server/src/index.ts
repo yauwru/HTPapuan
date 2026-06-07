@@ -83,9 +83,10 @@ app.ws<UserData>('/*', {
       case 'join': {
         const freq = msg.frequency.replace(/[^A-Z0-9._\-]/gi, '').toUpperCase().slice(0, 12);
         const sign = msg.callsign.replace(/[^A-Z0-9\-_ ]/gi, '').slice(0, 12).trim();
+        const role = msg.role === 'atc' ? 'atc' : 'pilot';
         if (!freq || !sign) return;
 
-        const room = joinRoom(session, freq, sign);
+        const room = joinRoom(session, freq, sign, role);
         const turnCredentials = generateTurnCredentials();
 
         send(ws, {
@@ -98,7 +99,7 @@ app.ws<UserData>('/*', {
 
         broadcast(room.members.values(), {
           type: 'member_joined',
-          member: { callsign: sign, sessionId, joinedAt: Date.now() },
+          member: { callsign: sign, sessionId, joinedAt: Date.now(), role },
         }, sessionId);
 
         broadcast(room.members.values(), {

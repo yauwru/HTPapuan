@@ -1,7 +1,10 @@
+export type UserRole = 'pilot' | 'atc';
+
 export interface Member {
   callsign: string;
   sessionId: string;
   joinedAt: number;
+  role: UserRole;
 }
 
 export interface VisitLogEntry {
@@ -9,6 +12,7 @@ export interface VisitLogEntry {
   sessionId: string;
   joinedAt: number;
   leftAt: number | null;
+  role: UserRole;
 }
 
 export interface TurnCredentials {
@@ -20,7 +24,7 @@ export interface TurnCredentials {
 
 // Client → Server
 export type ClientMessage =
-  | { type: 'join'; frequency: string; callsign: string; password?: string }
+  | { type: 'join'; frequency: string; callsign: string; role: UserRole; password?: string }
   | { type: 'leave' }
   | { type: 'ptt_start'; mimeType?: string; sampleRate?: number }
   | { type: 'ptt_end' }

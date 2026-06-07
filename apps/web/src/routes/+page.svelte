@@ -21,8 +21,11 @@
   import MemberList from '$components/MemberList.svelte';
   import PTTButton from '$components/PTTButton.svelte';
 
+  import type { UserRole } from '$lib/stores/channel.js';
+
   let freqInput = '';
   let callsignInput = '';
+  let role: UserRole = 'pilot';
   let textInput = '';
   let joinError = '';
   let utcClock = '';
@@ -46,6 +49,7 @@
   onMount(() => {
     callsignInput = localStorage.getItem('callsign') ?? '';
     freqInput = formatFreq(localStorage.getItem('lastFrequency') ?? '');
+    role = (localStorage.getItem('role') as UserRole) ?? 'pilot';
     initPttKey();
     initWebRTC(null);
     connect();
@@ -82,13 +86,14 @@
 
     localStorage.setItem('callsign', callsignInput);
     localStorage.setItem('lastFrequency', freq);
+    localStorage.setItem('role', role);
 
     if (!$isConnected) {
       joinError = 'Belum terhubung ke server. Coba lagi...';
       return;
     }
 
-    joinChannel(freq, callsign);
+    joinChannel(freq, callsign, role);
   }
 
   function handleLeave(): void {
@@ -173,6 +178,28 @@
         <p class="mt-2 text-xs text-slate-600 font-mono">
           Masukkan frekuensi ATC, contoh: 118.575
         </p>
+      </div>
+
+      <!-- Role selector -->
+      <div class="flex gap-3">
+        <button
+          on:click={() => role = 'pilot'}
+          class="flex-1 py-3 rounded-xl font-mono text-sm uppercase tracking-widest border-2 transition-all duration-150
+            {role === 'pilot'
+              ? 'border-sky-400 bg-sky-400/10 text-sky-400'
+              : 'border-slate-700 text-slate-600 hover:border-slate-600'}"
+        >
+          ✈ Pilot
+        </button>
+        <button
+          on:click={() => role = 'atc'}
+          class="flex-1 py-3 rounded-xl font-mono text-sm uppercase tracking-widest border-2 transition-all duration-150
+            {role === 'atc'
+              ? 'border-amber-400 bg-amber-400/10 text-amber-400'
+              : 'border-slate-700 text-slate-600 hover:border-slate-600'}"
+        >
+          📡 ATC
+        </button>
       </div>
 
       <!-- Callsign input -->
@@ -298,12 +325,16 @@
       {#if todayLog.length === 0}
         <p class="text-xs font-mono text-slate-700">Belum ada log hari ini</p>
       {:else}
-        <div class="max-h-40 overflow-y-auto space-y-1">
+        <div class="max-h-40 overflow-y-auto space-y-1.5">
           {#each [...todayLog].reverse() as entry (entry.sessionId + entry.joinedAt)}
-            <div class="grid font-mono text-xs gap-x-2" style="grid-template-columns: 1fr auto auto">
-              <span class="text-slate-300 truncate">{entry.callsign}</span>
-              <span class="text-slate-500 tabular-nums">{formatTs(entry.joinedAt)}</span>
-              <span class="tabular-nums {entry.leftAt ? 'text-slate-600' : 'text-mint'}">
+            <div class="flex items-center gap-1.5 font-mono text-xs">
+              <span class="px-1 py-0.5 rounded text-xs leading-none flex-shrink-0
+                {entry.role === 'atc' ? 'bg-amber-400/15 text-amber-400' : 'bg-sky-400/10 text-sky-400'}">
+                {entry.role === 'atc' ? 'ATC' : 'PIL'}
+              </span>
+              <span class="text-slate-300 truncate flex-1 min-w-0">{entry.callsign}</span>
+              <span class="text-slate-500 tabular-nums flex-shrink-0">{formatTs(entry.joinedAt)}</span>
+              <span class="tabular-nums flex-shrink-0 {entry.leftAt ? 'text-slate-600' : 'text-mint'}">
                 {entry.leftAt ? formatTs(entry.leftAt) : '• ONLINE'}
               </span>
             </div>
