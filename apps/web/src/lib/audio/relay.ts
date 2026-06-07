@@ -1,33 +1,67 @@
 // WebSocket binary audio relay — raw PCM Int16 @ 16 kHz
 //
-// Capture: fresh AudioContext + fresh getUserMedia stream per PTT press.
-//          Reusing a MediaStreamTrack across AudioContext instances causes audio
-//          degradation (slowmo / pitch issues) on iOS / Android after the first cycle.
-//          AudioWorklet resamples from device native rate → 16 kHz (linear interp).
-//          ScriptProcessorNode fallback uses txCtx.sampleRate (actual context rate)
-//          NOT track.getSettings().sampleRate — iOS returns the *requested* rate
-//          (16 kHz) there, which yields ratio = 1 and causes 3× slowmo.
-// Playback: jitter buffer (PREBUFFER_CHUNKS × 32 ms ≈ 128 ms) before scheduling.
-//           Audio routed through a radio bandpass + saturation chain.
+// Capture: txCtx persists between PTT presses — only getUserMedia is renewed each time.
+//          Reusing MediaStreamTrack across *different* AudioContext instances causes
+//          slowmo on iOS; reusing the same ctx + fresh stream avoids it.
+//          AudioWorklet resamples native rate → 16 kHz via linear interpolation.
+//          ScriptProcessorNode fallback uses txCtx.sampleRate (actual rate) —
+//          NOT track.getSettings().sampleRate, which iOS reports as the requested value.
+//
+// Playback: 3-chunk prebuffer (≈48 ms) then web-audio clock scheduling.
+//           LOOK_AHEAD ensures each chunk is always scheduled slightly ahead of now.
+//           nextPlayTime is NOT reset between transmissions so consecutive speakers
+//           chain without a re-buffer delay.
 
 import { writable } from 'svelte/store';
 
-const SAMPLE_RATE   = 16000;
-const WORKLET_CHUNK = 512;   // 32 ms @ 16 kHz
-const FALLBACK_BUF  = 1024;
-const PREBUFFER_CHUNKS = 4;  // ~128 ms jitter buffer
+const SAMPLE_RATE      = 16000;
+const WORKLET_CHUNK    = 256;   // 16 ms @ 16 kHz — halved from 512 (32 ms)
+const FALLBACK_BUF     = 512;
+const PREBUFFER_CHUNKS = 3;     // 48 ms prebuffer — was 4 × 32 ms = 128 ms
+const LOOK_AHEAD       = 0.06;  // 60 ms scheduling look-ahead
+const STALE_S          = 0.5;   // reset playhead when >500 ms behind
 
 // ── Sender ──────────────────────────────────────────────
+
 let localStream: MediaStream | null = null;
+// txCtx and workletLoaded persist across PTT presses — avoids re-init overhead
 let txCtx: AudioContext | null = null;
+let workletLoaded = false;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let captureNode: AudioWorkletNode | ScriptProcessorNode | null = null;
 let silentOut: GainNode | null = null;
 
+async function ensureTxCtx(): Promise<void> {
+  if (!txCtx || txCtx.state === 'closed') {
+    txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    workletLoaded = false;
+  }
+  if (txCtx.state === 'suspended') await txCtx.resume();
+  if (!workletLoaded) {
+    try {
+      await txCtx.audioWorklet.addModule('/audio-capture-processor.js');
+      workletLoaded = true;
+    } catch {
+      // ScriptProcessorNode fallback below
+    }
+  }
+}
+
+function disconnectCaptureGraph(): void {
+  if (captureNode instanceof AudioWorkletNode) captureNode.port.onmessage = null;
+  captureNode?.disconnect();
+  sourceNode?.disconnect();
+  silentOut?.disconnect();
+  captureNode = sourceNode = silentOut = null;
+}
+
 export async function startCapture(
   onChunk: (data: ArrayBuffer) => void,
 ): Promise<number> {
-  // Always get a fresh stream — stopCapture releases it so this always runs.
+  disconnectCaptureGraph();
+
+  // Always get a fresh stream — prevents iOS track-state degradation across captures
+  localStream?.getTracks().forEach((t) => t.stop());
   localStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
@@ -39,31 +73,36 @@ export async function startCapture(
     video: false,
   });
 
-  // Fresh AudioContext per PTT press — avoids worklet re-init issues on mobile.
-  txCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  if (txCtx.state === 'suspended') await txCtx.resume();
+  // Reuse existing AudioContext — creating a new one each press adds 100-200 ms on mobile
+  await ensureTxCtx();
 
-  sourceNode = txCtx.createMediaStreamSource(localStream);
-  silentOut  = txCtx.createGain();
+  sourceNode = txCtx!.createMediaStreamSource(localStream);
+  silentOut  = txCtx!.createGain();
   silentOut.gain.value = 0;
 
   let usingWorklet = false;
-  try {
-    await txCtx.audioWorklet.addModule('/audio-capture-processor.js');
-    const wn = new AudioWorkletNode(txCtx, 'audio-capture-processor', {
-      processorOptions: { chunkSize: WORKLET_CHUNK, targetRate: SAMPLE_RATE },
-    });
-    wn.port.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) onChunk(e.data);
-    };
-    captureNode = wn;
-    usingWorklet = true;
-  } catch {
-    // Fallback: ScriptProcessorNode.
-    // Use txCtx.sampleRate (ACTUAL context rate, e.g. 44100 or 48000 on iOS) —
-    // NOT track.getSettings().sampleRate which iOS reports as the requested value.
-    const ratio = txCtx.sampleRate / SAMPLE_RATE;
-    const sp = txCtx.createScriptProcessor(FALLBACK_BUF, 1, 1);
+  if (workletLoaded) {
+    try {
+      const wn = new AudioWorkletNode(txCtx!, 'audio-capture-processor', {
+        processorOptions: { chunkSize: WORKLET_CHUNK, targetRate: SAMPLE_RATE },
+      });
+      wn.port.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) onChunk(e.data);
+      };
+      captureNode = wn;
+      usingWorklet = true;
+    } catch {
+      workletLoaded = false;
+    }
+  }
+
+  if (!usingWorklet) {
+    // ScriptProcessorNode fallback.
+    // txCtx.sampleRate = ACTUAL device rate (iOS ignores the 16 kHz request).
+    // Using track.getSettings().sampleRate would return the *requested* 16 kHz
+    // → ratio 1.0 → no resampling → 3× slowmo on mobile.
+    const ratio = txCtx!.sampleRate / SAMPLE_RATE;
+    const sp = txCtx!.createScriptProcessor(FALLBACK_BUF, 1, 1);
     sp.onaudioprocess = (e) => {
       const f32    = e.inputBuffer.getChannelData(0);
       const outLen = Math.floor(f32.length / ratio);
@@ -83,37 +122,31 @@ export async function startCapture(
 
   sourceNode.connect(captureNode);
   captureNode.connect(silentOut);
-  silentOut.connect(txCtx.destination);
+  silentOut.connect(txCtx!.destination);
 
-  console.log(`[relay] TX via ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx.sampleRate}Hz → ${SAMPLE_RATE}Hz`);
+  console.log(`[relay] TX ${usingWorklet ? 'AudioWorklet' : 'ScriptProcessor'} @ ${txCtx!.sampleRate}Hz→${SAMPLE_RATE}Hz`);
   return SAMPLE_RATE;
 }
 
 export function stopCapture(): void {
-  captureNode?.disconnect();
-  sourceNode?.disconnect();
-  silentOut?.disconnect();
-  if (captureNode instanceof AudioWorkletNode) captureNode.port.close();
-  captureNode = sourceNode = silentOut = null;
-  txCtx?.close();
-  txCtx = null;
-  // Release stream — reusing a MediaStreamTrack across AudioContext instances
-  // accumulates state on iOS/Android and causes slowmo/distortion each cycle.
+  disconnectCaptureGraph();
+  // Stop the stream — fresh getUserMedia next press avoids iOS track-state degradation.
+  // txCtx is kept alive intentionally so the next press skips re-init.
   localStream?.getTracks().forEach((t) => t.stop());
   localStream = null;
 }
 
 export function releaseStream(): void {
-  stopCapture(); // stopCapture now also releases the stream
+  stopCapture();
 }
 
-// Call once on page load to trigger the browser mic-permission dialog early,
-// before the user presses PTT, so the first transmission is never interrupted.
 export async function requestMicPermission(): Promise<void> {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices) return;
   try {
     const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     s.getTracks().forEach((t) => t.stop());
+    // Pre-init AudioContext + worklet so the very first PTT press has no setup delay
+    await ensureTxCtx();
   } catch {
     // Denied or unavailable — PTT will surface the error when pressed
   }
@@ -125,22 +158,22 @@ export function getSupportedMimeType(): string {
 
 // ── Receiver ─────────────────────────────────────────────
 
-const PREBUFFER_CHUNKS_COUNT = PREBUFFER_CHUNKS;
-
-// Exported store — true while the jitter buffer is filling
 export const audioBuffering = writable(false);
 
 let rxCtx: AudioContext | null = null;
 let rxChainInput: AudioNode | null = null;
+// nextPlayTime is NOT reset between speaker_start/speaker_end so consecutive
+// speakers can chain without re-accumulating a full prebuffer.
 let nextPlayTime = 0;
 let incomingSampleRate = SAMPLE_RATE;
 let prebuffer: Float32Array[] = [];
 let playbackStarted = false;
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && rxCtx && rxCtx.state === 'suspended') {
-      // AudioContext was suspended while in background (iOS Safari etc.) —
-      // close it so next chunk recreates fresh without a stale burst.
+      // iOS suspended the RX context while backgrounded — close so next chunk
+      // gets a fresh context instead of playing a stale burst.
       rxCtx.close().catch(() => {});
       rxCtx = null;
       rxChainInput = null;
@@ -149,7 +182,7 @@ if (typeof document !== 'undefined') {
       nextPlayTime = 0;
       audioBuffering.set(false);
     }
-    // When going to background: do nothing — let audio keep playing.
+    // Going to background: do nothing — allow background audio to keep playing.
   });
 }
 
@@ -204,16 +237,19 @@ function getOrCreateRxCtx(): { ctx: AudioContext; input: AudioNode } {
 
 export function beginReceiving(_mimeType: string, sampleRate?: number): void {
   incomingSampleRate = sampleRate ?? SAMPLE_RATE;
-  nextPlayTime = 0;
   prebuffer = [];
   playbackStarted = false;
   audioBuffering.set(true);
+  // nextPlayTime intentionally NOT reset — if it's stale, scheduleChunk handles it
 }
 
 function scheduleChunk(f32: Float32Array, ctx: AudioContext, input: AudioNode): void {
   const now = ctx.currentTime;
-  if (nextPlayTime < now - 0.2) nextPlayTime = now + 0.01;
-  const startAt = Math.max(now + 0.01, nextPlayTime);
+  // If playhead is too far in the past (e.g. long silence or first use), catch up
+  if (nextPlayTime < now - STALE_S) {
+    nextPlayTime = now + LOOK_AHEAD;
+  }
+  const startAt = Math.max(now + LOOK_AHEAD, nextPlayTime);
   const buf = ctx.createBuffer(1, f32.length, incomingSampleRate);
   buf.copyToChannel(f32, 0);
   const src = ctx.createBufferSource();
@@ -236,7 +272,7 @@ export function receiveChunk(data: ArrayBuffer): void {
   const doSchedule = () => {
     if (!playbackStarted) {
       prebuffer.push(f32);
-      if (prebuffer.length >= PREBUFFER_CHUNKS_COUNT) {
+      if (prebuffer.length >= PREBUFFER_CHUNKS) {
         playbackStarted = true;
         audioBuffering.set(false);
         for (const chunk of prebuffer) scheduleChunk(chunk, ctx, input);
@@ -255,7 +291,7 @@ export function receiveChunk(data: ArrayBuffer): void {
 }
 
 export function playReceived(): void {
-  // Flush any remaining prebuffer chunks when transmission ends
+  // Flush any remaining prebuffer so short transmissions still play
   if (prebuffer.length > 0) {
     const { ctx, input } = getOrCreateRxCtx();
     const flush = () => {
@@ -268,5 +304,5 @@ export function playReceived(): void {
   prebuffer = [];
   playbackStarted = false;
   audioBuffering.set(false);
-  nextPlayTime = 0;
+  // nextPlayTime preserved — next speaker chains without extra prebuffer wait
 }
