@@ -11,7 +11,9 @@
     pttState,
     textMessages,
     visitLog,
+    frequencyDirectory,
   } from '$lib/stores/channel.js';
+  import { requestNotificationPermission } from '$lib/notifications.js';
   import { connect, disconnect, joinChannel, leaveChannel } from '$lib/wsClient.js';
   import { initWebRTC, cleanup as cleanupWebRTC } from '$lib/webrtc.js';
   import { playSquelchOpen } from '$lib/audio/squelch.js';
@@ -94,6 +96,7 @@
     }
 
     joinChannel(freq, callsign, role);
+    requestNotificationPermission(); // ask while we still have a user gesture
   }
 
   function handleLeave(): void {
@@ -251,6 +254,35 @@
         <p class="text-center text-amber-400 text-xs font-mono animate-pulse">
           Mencoba menyambung kembali...
         </p>
+      {/if}
+
+      <!-- Frequency Directory -->
+      {#if $frequencyDirectory.length > 0}
+        <div class="w-full">
+          <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">Frekuensi Aktif</p>
+          <div class="space-y-2">
+            {#each $frequencyDirectory as entry (entry.frequency)}
+              <button
+                on:click={() => { freqInput = entry.frequency; }}
+                class="w-full flex items-center justify-between bg-space-800 border border-slate-700/50 rounded-xl px-4 py-3 hover:border-mint/40 transition-colors text-left"
+              >
+                <span class="font-mono text-amber-400 tracking-widest lcd">{entry.frequency}</span>
+                <div class="flex items-center gap-2 font-mono text-xs">
+                  {#if entry.pilotCount > 0}
+                    <span class="text-sky-400">{entry.pilotCount} PIL</span>
+                  {/if}
+                  {#if entry.pilotCount > 0 && entry.atcCount > 0}
+                    <span class="text-slate-600">·</span>
+                  {/if}
+                  {#if entry.atcCount > 0}
+                    <span class="text-amber-400">{entry.atcCount} ATC</span>
+                  {/if}
+                  <span class="text-slate-500 ml-1">{entry.memberCount} online</span>
+                </div>
+              </button>
+            {/each}
+          </div>
+        </div>
       {/if}
     </div>
 
