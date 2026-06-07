@@ -13,6 +13,7 @@ import {
   networkRtt,
   addTextMessage,
   visitLog,
+  frequencyDirectory,
 } from './stores/channel.js';
 import type { ClientMessage, ServerMessage } from '@starry-glade/protocol';
 
@@ -112,6 +113,9 @@ function _connect(): void {
           if (m.find((x) => x.sessionId === msg.member.sessionId)) return m;
           return [...m, msg.member];
         });
+        import('./notifications.js').then(({ notifyMemberJoined }) =>
+          notifyMemberJoined(msg.member.callsign, msg.member.role, get(currentFrequency) ?? '')
+        );
         break;
 
       case 'member_left':
@@ -157,6 +161,10 @@ function _connect(): void {
 
       case 'visit_log':
         visitLog.set(msg.entries);
+        break;
+
+      case 'directory':
+        frequencyDirectory.set(msg.frequencies);
         break;
 
       case 'offer':

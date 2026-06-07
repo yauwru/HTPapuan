@@ -1,6 +1,6 @@
 import { writable, derived } from 'svelte/store';
-import type { Member, VisitLogEntry, UserRole } from '@starry-glade/protocol';
-export type { UserRole };
+import type { Member, VisitLogEntry, UserRole, FrequencyEntry } from '@starry-glade/protocol';
+export type { UserRole, FrequencyEntry };
 
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 export type PTTState = 'idle' | 'transmitting' | 'busy';
@@ -20,6 +20,7 @@ export const isConnected = derived(connectionState, ($s) => $s === 'connected');
 export const isInChannel = derived(currentFrequency, ($f) => $f !== null);
 
 export const visitLog = writable<VisitLogEntry[]>([]);
+export const frequencyDirectory = writable<FrequencyEntry[]>([]);
 
 // Text messages (Phase 2 - stored locally)
 export interface TextMessage {

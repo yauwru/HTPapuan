@@ -15,6 +15,13 @@ export interface VisitLogEntry {
   role: UserRole;
 }
 
+export interface FrequencyEntry {
+  frequency: string;
+  memberCount: number;
+  pilotCount: number;
+  atcCount: number;
+}
+
 export interface TurnCredentials {
   urls: string[];
   username: string;
@@ -49,6 +56,7 @@ export type ServerMessage =
   | { type: 'text_broadcast'; callsign: string; text: string; timestamp: number }
   | { type: 'roger'; callsign: string }
   | { type: 'visit_log'; entries: VisitLogEntry[] }
+  | { type: 'directory'; frequencies: FrequencyEntry[] }
   | { type: 'error'; code: string; message: string }
   | { type: 'ping' };
 

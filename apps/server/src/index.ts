@@ -10,6 +10,8 @@ import {
   acquirePTT,
   releasePTT,
   getRoomMembers,
+  getAllSessions,
+  getDirectory,
   type Session,
 } from './rooms.js';
 import { generateTurnCredentials } from './turn.js';
@@ -36,6 +38,13 @@ function broadcast(members: Iterable<Session>, message: ServerMessage, excludeId
   }
 }
 
+function broadcastDirectory(): void {
+  const payload = JSON.stringify({ type: 'directory', frequencies: getDirectory() } satisfies ServerMessage);
+  for (const session of getAllSessions()) {
+    try { (session.ws as WS).send(payload, false, true); } catch {}
+  }
+}
+
 const app = App();
 
 app.ws<UserData>('/*', {
@@ -47,6 +56,8 @@ app.ws<UserData>('/*', {
     const sessionId = randomUUID();
     ws.getUserData().sessionId = sessionId;
     createSession(sessionId, ws);
+    // Send current directory immediately so the join screen can show active freqs
+    ws.send(JSON.stringify({ type: 'directory', frequencies: getDirectory() } satisfies ServerMessage), false, true);
     console.log(`[+] ${sessionId} connected`);
   },
 
@@ -107,6 +118,7 @@ app.ws<UserData>('/*', {
           entries: room.visitLog,
         });
 
+        broadcastDirectory();
         console.log(`[>] ${sign} joined ${freq} (${room.members.size} members)`);
         break;
       }
@@ -126,6 +138,7 @@ app.ws<UserData>('/*', {
             entries: room.visitLog,
           });
         }
+        broadcastDirectory();
         break;
       }
 
@@ -241,6 +254,7 @@ app.ws<UserData>('/*', {
       });
     }
 
+    broadcastDirectory();
     console.log(`[-] ${sessionId} (${callsign || 'anon'}) disconnected`);
   },
 });

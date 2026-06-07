@@ -1,4 +1,4 @@
-import type { Member, VisitLogEntry, UserRole } from '@starry-glade/protocol';
+import type { Member, VisitLogEntry, UserRole, FrequencyEntry } from '@starry-glade/protocol';
 
 export interface Session {
   id: string;
@@ -117,6 +117,24 @@ export function getRoomMembers(room: Room): Member[] {
     joinedAt: Date.now(),
     role: s.role,
   }));
+}
+
+export function getAllSessions(): IterableIterator<Session> {
+  return sessions.values();
+}
+
+export function getDirectory(): FrequencyEntry[] {
+  const result: FrequencyEntry[] = [];
+  for (const room of rooms.values()) {
+    if (room.members.size === 0) continue;
+    let pilotCount = 0;
+    let atcCount = 0;
+    for (const s of room.members.values()) {
+      if (s.role === 'atc') atcCount++; else pilotCount++;
+    }
+    result.push({ frequency: room.frequency, memberCount: room.members.size, pilotCount, atcCount });
+  }
+  return result.sort((a, b) => b.memberCount - a.memberCount);
 }
 
 // Cleanup stale rooms after 24 hours of no activity
